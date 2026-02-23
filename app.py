@@ -99,7 +99,7 @@ def channel_sort_key(ch_tag: str) -> Tuple[int, int]:
 
     ch, tag = int(m.group(1)), m.group(2)
     tag_order = {"RT": 0, "LT": 1, "HT": 2}
-    return (ch, tag_order.get(tag, 3))
+    return (tag_order.get(tag, 3), ch)
 
 
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
