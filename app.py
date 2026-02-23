@@ -412,6 +412,8 @@ def build_sorting_rows(
         min_value = float(config["min"])
         max_value = float(config["max"])
 
+        before_count = len(candidate_sns)
+
         kept_sns = set()
         for sn in sorted(candidate_sns):
             sn_rows = grouped[sn]
@@ -425,14 +427,33 @@ def build_sorting_rows(
                 kept_sns.add(sn)
 
         candidate_sns = kept_sns
+        removed_sns = sorted(
+            [sn for sn in grouped.keys() if sn not in candidate_sns],
+            key=lambda sn: str(sn),
+        )
         steps.append(
             {
                 "priority": config["priority"],
                 "field": label,
                 "range": f"[{min_value}, {max_value}]",
+                "candidate_before": before_count,
                 "qualified_sn": len(candidate_sns),
+                "filtered_out": max(before_count - len(candidate_sns), 0),
                 "qualified_sn_list": sorted(candidate_sns, key=lambda sn: str(sn)),
+                "filtered_out_sn_list": removed_sns,
             }
+        )
+
+        messages.append(
+            "sorting step P{priority} {field} {range_text}: {before} -> {after} "
+            "(淘汰 {filtered})".format(
+                priority=config["priority"],
+                field=label,
+                range_text=f"[{min_value}, {max_value}]",
+                before=before_count,
+                after=len(candidate_sns),
+                filtered=max(before_count - len(candidate_sns), 0),
+            )
         )
         if not candidate_sns:
             break
@@ -497,7 +518,7 @@ def append_sum_sheet(
     for idx, step in enumerate(sorting_steps, start=1):
         ws.append(
             [
-                f"Sorting Step {idx} T",
+                f"Sorting Step {idx} T (P{step.get('priority')})",
                 step.get("qualified_sn", 0),
             ]
         )
@@ -526,8 +547,11 @@ def append_sum_sheet(
             "Sorting Logic",
             "Range",
             "Priority",
+            "Candidate SN before step",
             "Qualified SN after step",
+            "Filtered out in this step",
             "Qualified TESTSN list",
+            "Filtered out TESTSN list",
         ]
     )
     for step in sorting_steps:
@@ -536,8 +560,11 @@ def append_sum_sheet(
                 step["field"],
                 step["range"],
                 step["priority"],
+                step.get("candidate_before", 0),
                 step["qualified_sn"],
+                step.get("filtered_out", 0),
                 ", ".join(str(sn) for sn in step.get("qualified_sn_list", [])),
+                ", ".join(str(sn) for sn in step.get("filtered_out_sn_list", [])),
             ]
         )
 
