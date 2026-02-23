@@ -9,7 +9,8 @@ from tkinter import filedialog, messagebox, ttk
 
 CONFIG_PATH = Path.home() / ".excel_merge_ui_config.json"
 VALID_EXTENSIONS = {".xlsx", ".csv"}
-REQUIRED_COLUMNS = {"SN", "CHNumber", "TESTRESULT"}
+REQUIRED_COLUMNS = {"CHNumber", "TESTRESULT"}
+SN_COLUMN_CANDIDATES = ("TESTSN", "SN")
 
 
 def load_last_folder() -> str:
@@ -43,6 +44,14 @@ def normalize_ch_number(value: object) -> str:
     if not m:
         return text
     return str(int(m.group(1)))
+
+
+def find_sn_column(headers: List[str]) -> str:
+    normalized_map = {str(h).strip().upper(): h for h in headers}
+    for candidate in SN_COLUMN_CANDIDATES:
+        if candidate in normalized_map:
+            return normalized_map[candidate]
+    return ""
 
 
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
@@ -98,7 +107,12 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
     if not rows:
         return [], [f"{file_path.name}: 無資料"]
 
-    missing = REQUIRED_COLUMNS - set(rows[0].keys())
+    headers = list(rows[0].keys())
+    sn_key = find_sn_column(headers)
+    if not sn_key:
+        return [], [f"{file_path.name}: 缺少必要欄位 ['TESTSN' 或 'SN']"]
+
+    missing = REQUIRED_COLUMNS - set(headers)
     if missing:
         return [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"]
 
@@ -106,13 +120,13 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
 
     grouped: Dict[str, List[Dict[str, str]]] = {}
     for row in rows:
-        sn = str(row.get("SN", "")).strip()
+        sn = str(row.get(sn_key, "")).strip()
         if not sn:
-            issues.append(f"{file_path.name}: 發現空白 SN，已略過")
+            issues.append(f"{file_path.name}: 發現空白 {sn_key}，已略過")
             continue
 
         normalized = dict(row)
-        normalized["SN"] = sn
+        normalized["TESTSN"] = sn
         normalized["CHNumber"] = normalize_ch_number(row.get("CHNumber", ""))
         normalized["TESTRESULT"] = str(row.get("TESTRESULT", "")).strip().upper()
 
@@ -131,14 +145,14 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
         if not expected.issubset(channel_set):
             missing_channels = sorted(expected - channel_set, key=int)
             issues.append(
-                f"{file_path.name}: SN={sn} 缺少 CHNumber={missing_channels}，已略過"
+                f"{file_path.name}: TESTSN={sn} 缺少 CHNumber={missing_channels}，已略過"
             )
             continue
 
         if any(ch not in expected for ch in channel_set):
             extra_channels = sorted(channel_set - expected)
             issues.append(
-                f"{file_path.name}: SN={sn} 發現非 1~8 的 CHNumber={extra_channels}，已略過"
+                f"{file_path.name}: TESTSN={sn} 發現非 1~8 的 CHNumber={extra_channels}，已略過"
             )
             continue
 
@@ -154,7 +168,7 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
 
         if failed_channels:
             issues.append(
-                f"{file_path.name}: SN={sn} CHNumber={failed_channels} 沒有 PASS，已略過"
+                f"{file_path.name}: TESTSN={sn} CHNumber={failed_channels} 沒有 PASS，已略過"
             )
             continue
 
@@ -220,12 +234,17 @@ def process_folder(folder_path: Path) -> Tuple[Path, List[str], int]:
 
     count_by_sn: Dict[str, int] = {}
     for row in merged_rows:
-        sn = row["SN"]
+        sn = row["TESTSN"]
         count_by_sn[sn] = count_by_sn.get(sn, 0) + 1
 
-    for sn, cnt in count_by_sn.items():
+    qualified_sns = {sn for sn, cnt in count_by_sn.items() if cnt == 24}
+    for sn, cnt in sorted(count_by_sn.items()):
         if cnt != 24:
-            messages.append(f"提醒: 合併後 SN={sn} 筆數為 {cnt}，非 24 筆")
+            messages.append(f"提醒: 合併後 TESTSN={sn} 筆數為 {cnt}，非 24 筆")
+
+    merged_rows = [row for row in merged_rows if row["TESTSN"] in qualified_sns]
+    if not merged_rows:
+        raise ValueError("沒有任何 TESTSN 符合 24 筆規則可輸出")
 
     output_path = write_merged_output(folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":

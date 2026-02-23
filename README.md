@@ -4,10 +4,12 @@
 - 選擇資料夾並記住上一次路徑。
 - 讀取資料夾內所有 `.xlsx` 與 `.csv`。
 - 以第一行為 Header。
-- 依欄位 `SN`, `CHNumber`, `TESTRESULT` 驗證：
-  - 同一個 `SN` 必須涵蓋 `CHNumber` 1~8。
+- 依欄位 `TESTSN`（或 `SN`）, `CHNumber`, `TESTRESULT` 驗證：
+  - 每個檔案中同一個 `TESTSN` 必須涵蓋 `CHNumber` 1~8。
   - 若同一個 `CHNumber` 有多筆，會優先挑選 `TESTRESULT=PASS` 的那一筆。
-  - 任一 `CHNumber` 沒有 PASS（或缺號）即略過該 `SN`。
+  - 任一 `CHNumber` 沒有 PASS（或缺號）即略過該 `TESTSN`。
+- 合併後會再檢查同一個 `TESTSN` 是否剛好 24 筆（例如 RT/LT/HT 各 8 筆），只有符合者才會輸出。
+- 若沒有任何 `TESTSN` 達到 24 筆，會顯示錯誤訊息。
 - 合併所有合格資料後輸出 `merged_output.xlsx`。
 - `CHNumber` 會依檔名自動附加 `_RT`, `_LT`, `_HT`（若無法辨識則為 `_UNKN`）。
 - 若未安裝 `openpyxl`，會退回輸出 `merged_output.csv`。
