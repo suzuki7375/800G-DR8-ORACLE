@@ -494,17 +494,31 @@ def append_sum_sheet(
     ws.append(["Item", "Value"])
     ws.append(["Merged T", len(merged_sns)])
     ws.append(["Sorting T", len(sorting_sns)])
-    ws.append([])
-    ws.append(["Merged TESTSN (24 rows each)", "Sorting T"])
-
-    max_len = max(len(merged_sns), len(sorting_sns))
-    for idx in range(max_len):
+    for idx, step in enumerate(sorting_steps, start=1):
         ws.append(
             [
-                merged_sns[idx] if idx < len(merged_sns) else "",
-                sorting_sns[idx] if idx < len(sorting_sns) else "",
+                f"Sorting Step {idx} T",
+                step.get("qualified_sn", 0),
             ]
         )
+    ws.append([])
+
+    stage_columns: List[Tuple[str, List[str]]] = [
+        ("Merged TESTSN (24 rows each)", merged_sns),
+        ("Sorting T", sorting_sns),
+    ]
+    for step in sorting_steps:
+        stage_columns.append(
+            (
+                f"P{step.get('priority')} {step.get('field')} {step.get('range')}",
+                list(step.get("qualified_sn_list", [])),
+            )
+        )
+
+    ws.append([header for header, _ in stage_columns])
+    max_len = max(len(values) for _, values in stage_columns)
+    for idx in range(max_len):
+        ws.append([values[idx] if idx < len(values) else "" for _, values in stage_columns])
 
     ws.append([])
     ws.append(
