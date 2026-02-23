@@ -1,0 +1,286 @@
+import csv
+import json
+import re
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+
+CONFIG_PATH = Path.home() / ".excel_merge_ui_config.json"
+VALID_EXTENSIONS = {".xlsx", ".csv"}
+REQUIRED_COLUMNS = {"SN", "CHNumber", "TESTRESULT"}
+
+
+def load_last_folder() -> str:
+    if not CONFIG_PATH.exists():
+        return ""
+    try:
+        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        return data.get("last_folder", "")
+    except Exception:
+        return ""
+
+
+def save_last_folder(folder: str) -> None:
+    CONFIG_PATH.write_text(
+        json.dumps({"last_folder": folder}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def infer_temp_tag(file_path: Path) -> str:
+    stem_upper = file_path.stem.upper()
+    for tag in ("RT", "LT", "HT"):
+        if re.search(rf"(^|[_\-\s]){tag}([_\-\s]|$)", stem_upper):
+            return tag
+    return "UNKN"
+
+
+def normalize_ch_number(value: object) -> str:
+    text = str(value).strip()
+    m = re.match(r"^(\d+)", text)
+    return m.group(1) if m else text
+
+
+def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
+    with file_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        if not reader.fieldnames:
+            return []
+        return [dict(row) for row in reader]
+
+
+def read_xlsx_rows(file_path: Path) -> List[Dict[str, str]]:
+    try:
+        from openpyxl import load_workbook
+    except ImportError as exc:
+        raise RuntimeError(
+            "讀取 xlsx 需要 openpyxl，請先安裝: pip install openpyxl"
+        ) from exc
+
+    wb = load_workbook(file_path, data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+
+    headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+    data_rows: List[Dict[str, str]] = []
+    for row in rows[1:]:
+        record = {}
+        for i, header in enumerate(headers):
+            if not header:
+                continue
+            value = row[i] if i < len(row) else ""
+            record[header] = "" if value is None else str(value)
+        data_rows.append(record)
+
+    return data_rows
+
+
+def read_table_rows(file_path: Path) -> List[Dict[str, str]]:
+    if file_path.suffix.lower() == ".csv":
+        return read_csv_rows(file_path)
+    return read_xlsx_rows(file_path)
+
+
+def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], List[str]]:
+    issues: List[str] = []
+
+    try:
+        rows = read_table_rows(file_path)
+    except Exception as exc:
+        return [], [f"{file_path.name}: 讀取失敗 ({exc})"]
+
+    if not rows:
+        return [], [f"{file_path.name}: 無資料"]
+
+    missing = REQUIRED_COLUMNS - set(rows[0].keys())
+    if missing:
+        return [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"]
+
+    tag = infer_temp_tag(file_path)
+
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for row in rows:
+        sn = str(row.get("SN", "")).strip()
+        if not sn:
+            issues.append(f"{file_path.name}: 發現空白 SN，已略過")
+            continue
+
+        normalized = dict(row)
+        normalized["SN"] = sn
+        normalized["CHNumber"] = normalize_ch_number(row.get("CHNumber", ""))
+        normalized["TESTRESULT"] = str(row.get("TESTRESULT", "")).strip().upper()
+
+        grouped.setdefault(sn, []).append(normalized)
+
+    valid_rows: List[Dict[str, str]] = []
+    expected = {str(i) for i in range(1, 9)}
+
+    for sn, group in grouped.items():
+        if len(group) != 8:
+            issues.append(f"{file_path.name}: SN={sn} 筆數為 {len(group)}，預期 8 筆，已略過")
+            continue
+
+        ch_values = {str(g["CHNumber"]) for g in group}
+        if ch_values != expected:
+            issues.append(f"{file_path.name}: SN={sn} CHNumber 不是 1~8，已略過")
+            continue
+
+        if not all(g["TESTRESULT"] == "PASS" for g in group):
+            issues.append(f"{file_path.name}: SN={sn} TESTRESULT 非全 PASS，已略過")
+            continue
+
+        for g in group:
+            item = dict(g)
+            item["CHNumber"] = f"{item['CHNumber']}_{tag}"
+            valid_rows.append(item)
+
+    return valid_rows, issues
+
+
+def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
+    all_headers: List[str] = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                all_headers.append(key)
+
+    output_xlsx = folder_path / "merged_output.xlsx"
+    try:
+        from openpyxl import Workbook
+
+        wb = Workbook()
+        ws = wb.active
+        ws.append(all_headers)
+        for row in rows:
+            ws.append([row.get(h, "") for h in all_headers])
+        wb.save(output_xlsx)
+        return output_xlsx
+    except ImportError:
+        output_csv = folder_path / "merged_output.csv"
+        with output_csv.open("w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=all_headers)
+            writer.writeheader()
+            writer.writerows(rows)
+        return output_csv
+
+
+def process_folder(folder_path: Path) -> Tuple[Path, List[str], int]:
+    files = sorted(
+        [
+            p
+            for p in folder_path.iterdir()
+            if p.is_file() and p.suffix.lower() in VALID_EXTENSIONS
+        ]
+    )
+
+    if not files:
+        raise ValueError("資料夾內沒有 xlsx/csv 檔案")
+
+    merged_rows: List[Dict[str, str]] = []
+    messages: List[str] = []
+
+    for file_path in files:
+        transformed, issues = validate_and_transform_file(file_path)
+        messages.extend(issues)
+        merged_rows.extend(transformed)
+
+    if not merged_rows:
+        raise ValueError("沒有任何符合規則的資料可合併")
+
+    count_by_sn: Dict[str, int] = {}
+    for row in merged_rows:
+        sn = row["SN"]
+        count_by_sn[sn] = count_by_sn.get(sn, 0) + 1
+
+    for sn, cnt in count_by_sn.items():
+        if cnt != 24:
+            messages.append(f"提醒: 合併後 SN={sn} 筆數為 {cnt}，非 24 筆")
+
+    output_path = write_merged_output(folder_path, merged_rows)
+    if output_path.suffix.lower() == ".csv":
+        messages.append("提醒: 未安裝 openpyxl，輸出改為 merged_output.csv")
+    return output_path, messages, len(merged_rows)
+
+
+class App(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("Excel 合併工具")
+        self.geometry("760x500")
+
+        self.folder_var = tk.StringVar(value=load_last_folder())
+        self._build_ui()
+
+    def _build_ui(self):
+        frame = ttk.Frame(self, padding=12)
+        frame.pack(fill="both", expand=True)
+
+        ttk.Label(frame, text="資料夾路徑：").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.folder_var, width=80).grid(
+            row=1, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(4, 8)
+        )
+        ttk.Button(frame, text="選擇資料夾", command=self.choose_folder).grid(
+            row=1, column=2, sticky="ew"
+        )
+        ttk.Button(frame, text="執行", command=self.run_process).grid(
+            row=2, column=0, columnspan=3, sticky="ew", pady=(0, 10)
+        )
+
+        ttk.Label(frame, text="執行訊息：").grid(row=3, column=0, sticky="w")
+
+        self.log_text = tk.Text(frame, wrap="word", height=22)
+        self.log_text.grid(row=4, column=0, columnspan=3, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
+        scrollbar.grid(row=4, column=3, sticky="ns")
+        self.log_text.configure(yscrollcommand=scrollbar.set)
+
+        frame.columnconfigure(0, weight=1)
+        frame.columnconfigure(1, weight=1)
+        frame.rowconfigure(4, weight=1)
+
+    def choose_folder(self):
+        folder = filedialog.askdirectory(initialdir=self.folder_var.get() or ".")
+        if folder:
+            self.folder_var.set(folder)
+            save_last_folder(folder)
+
+    def log(self, text: str):
+        self.log_text.insert("end", text + "\n")
+        self.log_text.see("end")
+
+    def run_process(self):
+        self.log_text.delete("1.0", "end")
+        folder = self.folder_var.get().strip()
+        if not folder:
+            messagebox.showerror("錯誤", "請先選擇資料夾")
+            return
+
+        folder_path = Path(folder)
+        if not folder_path.exists() or not folder_path.is_dir():
+            messagebox.showerror("錯誤", "資料夾路徑不存在")
+            return
+
+        save_last_folder(folder)
+
+        try:
+            output_path, messages, total_rows = process_folder(folder_path)
+            self.log(f"完成，總筆數：{total_rows}")
+            self.log(f"輸出檔案：{output_path}")
+            for msg in messages:
+                self.log(msg)
+            messagebox.showinfo("完成", f"合併完成：{output_path}")
+        except Exception as exc:
+            self.log(f"執行失敗：{exc}")
+            messagebox.showerror("錯誤", str(exc))
+
+
+if __name__ == "__main__":
+    app = App()
+    app.mainloop()
