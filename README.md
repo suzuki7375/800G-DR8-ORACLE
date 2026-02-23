@@ -11,6 +11,7 @@
 - 合併後會再檢查同一個 `TESTSN` 是否剛好 24 筆（例如 RT/LT/HT 各 8 筆），只有符合者才會輸出（不足 24 筆不輸出）。
 - 若沒有任何 `TESTSN` 達到 24 筆，會顯示錯誤訊息。
 - 合併所有合格資料後輸出 `merged_output.xlsx`。
+- 輸出排序為同一 `TESTSN` 下依序：`1~8_RT`、`1~8_LT`、`1~8_HT`。
 - `CHNumber` 會依檔名自動附加 `_RT`, `_LT`, `_HT`（若無法辨識則為 `_UNKN`）。
 - 若未安裝 `openpyxl`，會退回輸出 `merged_output.csv`。
 
