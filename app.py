@@ -478,11 +478,11 @@ class App(tk.Tk):
             variable=self.enable_sorting_var,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
-        ttk.Label(frame, text="DDMI_Bias(mA) 最小值：").grid(row=3, column=0, sticky="w")
+        ttk.Label(frame, text="DDMI_BIAS  min ->").grid(row=3, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.bias_min_var, width=18).grid(
             row=3, column=1, sticky="w", pady=(0, 4)
         )
-        ttk.Label(frame, text="DDMI_Bias(mA) 最大值：").grid(row=3, column=2, sticky="w")
+        ttk.Label(frame, text="max ->").grid(row=3, column=2, sticky="w")
         ttk.Entry(frame, textvariable=self.bias_max_var, width=18).grid(
             row=3, column=2, sticky="e", pady=(0, 4)
         )
