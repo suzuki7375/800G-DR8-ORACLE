@@ -39,6 +39,14 @@ def infer_temp_tag(file_path: Path) -> str:
     return "UNKN"
 
 
+def infer_temp_tag_from_chnumber(value: object) -> str:
+    text = str(value).strip().upper()
+    m = re.search(r"(?:^|[_\-\s])(RT|LT|HT)(?:[_\-\s]|$)", text)
+    if m:
+        return m.group(1)
+    return "UNKN"
+
+
 def normalize_ch_number(value: object) -> str:
     text = str(value).strip()
     m = re.search(r"(\d+)", text)
@@ -90,13 +98,8 @@ def channel_sort_key(ch_tag: str) -> Tuple[int, int]:
         return (99, 99)
 
     ch, tag = int(m.group(1)), m.group(2)
-    if tag == "RT":
-        return (0, -ch)
-    if tag == "LT":
-        return (1, ch)
-    if tag == "HT":
-        return (2, ch)
-    return (3, ch)
+    tag_order = {"RT": 0, "LT": 1, "HT": 2}
+    return (ch, tag_order.get(tag, 3))
 
 
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
@@ -161,7 +164,7 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
     if missing:
         return [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"]
 
-    tag = infer_temp_tag(file_path)
+    file_tag = infer_temp_tag(file_path)
 
     grouped: Dict[str, List[Dict[str, str]]] = {}
     for row in rows:
@@ -172,7 +175,13 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
 
         normalized = dict(row)
         normalized["TESTSN"] = sn
-        normalized["CHNumber"] = normalize_ch_number(row.get("CHNumber", ""))
+        raw_ch_number = row.get("CHNumber", "")
+        normalized["CHNumber"] = normalize_ch_number(raw_ch_number)
+        normalized["TEMP_TAG"] = (
+            file_tag
+            if file_tag != "UNKN"
+            else infer_temp_tag_from_chnumber(raw_ch_number)
+        )
         normalized["TESTRESULT"] = str(row.get("TESTRESULT", "")).strip().upper()
 
         grouped.setdefault(sn, []).append(normalized)
@@ -227,7 +236,8 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
 
         for g in selected_rows:
             item = dict(g)
-            item["CHNumber"] = f"{item['CHNumber']}_{tag}"
+            item["CHNumber"] = f"{item['CHNumber']}_{item['TEMP_TAG']}"
+            item.pop("TEMP_TAG", None)
             valid_rows.append(item)
 
     return valid_rows, issues
