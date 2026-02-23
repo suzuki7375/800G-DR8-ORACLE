@@ -431,6 +431,10 @@ def append_sum_sheet(
         {row["TESTSN"] for row in sorting_rows},
         key=lambda sn: str(sn),
     )
+    sorting_sn_set = set(sorting_sns)
+    merged_sns_display_order = sorting_sns + [
+        sn for sn in merged_sns if sn not in sorting_sn_set
+    ]
 
     ws = wb.create_sheet("sum")
     ws.append(["Item", "Value", "SN"])
@@ -452,8 +456,7 @@ def append_sum_sheet(
 
     ws.append(["Merged TESTSN (24 rows each)"])
     highlight_fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
-    sorting_sn_set = set(sorting_sns)
-    for sn in merged_sns:
+    for sn in merged_sns_display_order:
         ws.append([sn])
         if sn in sorting_sn_set:
             ws.cell(row=ws.max_row, column=1).fill = highlight_fill
