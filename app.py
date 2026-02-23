@@ -1,8 +1,9 @@
 import csv
 import json
 import re
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -52,6 +53,50 @@ def find_sn_column(headers: List[str]) -> str:
         if candidate in normalized_map:
             return normalized_map[candidate]
     return ""
+
+
+def parse_testdate(value: object) -> Optional[datetime]:
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        num = float(text)
+        if num > 59:
+            return datetime(1899, 12, 30) + timedelta(days=num)
+    except ValueError:
+        pass
+
+    formats = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    )
+    for fmt in formats:
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def channel_sort_key(ch_tag: str) -> Tuple[int, int]:
+    m = re.match(r"^(\d+)_([A-Z]+)$", ch_tag)
+    if not m:
+        return (99, 99)
+
+    ch, tag = int(m.group(1)), m.group(2)
+    if tag == "RT":
+        return (0, -ch)
+    if tag == "LT":
+        return (1, ch)
+    if tag == "HT":
+        return (2, ch)
+    return (3, ch)
 
 
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
@@ -160,7 +205,15 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
         failed_channels: List[str] = []
         for ch in sorted(expected, key=int):
             ch_rows = by_channel[ch]
-            pass_row = next((row for row in ch_rows if row["TESTRESULT"] == "PASS"), None)
+            pass_rows = [row for row in ch_rows if row["TESTRESULT"] == "PASS"]
+            pass_row = None
+            if pass_rows:
+                pass_row = max(
+                    pass_rows,
+                    key=lambda row: (
+                        parse_testdate(row.get("TESTDATE", "")) or datetime.min,
+                    ),
+                )
             if not pass_row:
                 failed_channels.append(ch)
                 continue
@@ -245,6 +298,8 @@ def process_folder(folder_path: Path) -> Tuple[Path, List[str], int]:
     merged_rows = [row for row in merged_rows if row["TESTSN"] in qualified_sns]
     if not merged_rows:
         raise ValueError("沒有任何 TESTSN 符合 24 筆規則可輸出")
+
+    merged_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
 
     output_path = write_merged_output(folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":
