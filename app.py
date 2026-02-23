@@ -122,20 +122,43 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
     expected = {str(i) for i in range(1, 9)}
 
     for sn, group in grouped.items():
-        if len(group) != 8:
-            issues.append(f"{file_path.name}: SN={sn} 筆數為 {len(group)}，預期 8 筆，已略過")
-            continue
-
-        ch_values = {str(g["CHNumber"]) for g in group}
-        if ch_values != expected:
-            issues.append(f"{file_path.name}: SN={sn} CHNumber 不是 1~8，已略過")
-            continue
-
-        if not all(g["TESTRESULT"] == "PASS" for g in group):
-            issues.append(f"{file_path.name}: SN={sn} TESTRESULT 非全 PASS，已略過")
-            continue
-
+        by_channel: Dict[str, List[Dict[str, str]]] = {}
         for g in group:
+            channel = str(g["CHNumber"])
+            by_channel.setdefault(channel, []).append(g)
+
+        channel_set = set(by_channel.keys())
+        if not expected.issubset(channel_set):
+            missing_channels = sorted(expected - channel_set, key=int)
+            issues.append(
+                f"{file_path.name}: SN={sn} 缺少 CHNumber={missing_channels}，已略過"
+            )
+            continue
+
+        if any(ch not in expected for ch in channel_set):
+            extra_channels = sorted(channel_set - expected)
+            issues.append(
+                f"{file_path.name}: SN={sn} 發現非 1~8 的 CHNumber={extra_channels}，已略過"
+            )
+            continue
+
+        selected_rows: List[Dict[str, str]] = []
+        failed_channels: List[str] = []
+        for ch in sorted(expected, key=int):
+            ch_rows = by_channel[ch]
+            pass_row = next((row for row in ch_rows if row["TESTRESULT"] == "PASS"), None)
+            if not pass_row:
+                failed_channels.append(ch)
+                continue
+            selected_rows.append(pass_row)
+
+        if failed_channels:
+            issues.append(
+                f"{file_path.name}: SN={sn} CHNumber={failed_channels} 沒有 PASS，已略過"
+            )
+            continue
+
+        for g in selected_rows:
             item = dict(g)
             item["CHNumber"] = f"{item['CHNumber']}_{tag}"
             valid_rows.append(item)
