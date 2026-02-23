@@ -431,6 +431,7 @@ def build_sorting_rows(
                 "field": label,
                 "range": f"[{min_value}, {max_value}]",
                 "qualified_sn": len(candidate_sns),
+                "qualified_sn_list": sorted(candidate_sns, key=lambda sn: str(sn)),
             }
         )
         if not candidate_sns:
@@ -506,7 +507,15 @@ def append_sum_sheet(
         )
 
     ws.append([])
-    ws.append(["Sorting Logic", "Range", "Priority", "Qualified SN after step"])
+    ws.append(
+        [
+            "Sorting Logic",
+            "Range",
+            "Priority",
+            "Qualified SN after step",
+            "Qualified TESTSN list",
+        ]
+    )
     for step in sorting_steps:
         ws.append(
             [
@@ -514,6 +523,7 @@ def append_sum_sheet(
                 step["range"],
                 step["priority"],
                 step["qualified_sn"],
+                ", ".join(str(sn) for sn in step.get("qualified_sn_list", [])),
             ]
         )
 
