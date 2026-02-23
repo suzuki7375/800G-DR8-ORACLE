@@ -12,6 +12,28 @@ CONFIG_PATH = Path.home() / ".excel_merge_ui_config.json"
 VALID_EXTENSIONS = {".xlsx", ".csv"}
 REQUIRED_COLUMNS = {"CHNumber", "TESTRESULT"}
 SN_COLUMN_CANDIDATES = ("TESTSN", "SN")
+SORTING_FIELDS = [
+    {
+        "label": "DDMI_Bias(mA)",
+        "aliases": ["DDMI_Bias(mA)", "DDMI BIAS", "DDMI_BIAS"],
+    },
+    {"label": "Outer_OMA(dB)", "aliases": ["Outer_OMA(dB)", "Outer OMA"]},
+    {"label": "Outer_ER(dB)", "aliases": ["Outer_ER(dB)", "Outer ER"]},
+    {"label": "TDECQ(dB)", "aliases": ["TDECQ(dB)", "TDECQ"]},
+    {"label": "RLM", "aliases": ["RLM"]},
+    {"label": "Ceq(dB)", "aliases": ["Ceq(dB)", "Ceq", "CEQ"]},
+    {
+        "label": "TDECQ_Ceq(dB)",
+        "aliases": ["TDECQ_Ceq(dB)", "TDECQ_Ceq", "TDECQ CEQ"],
+    },
+    {"label": "Overshoot", "aliases": ["Overshoot"]},
+    {"label": "Undershoot", "aliases": ["Undershoot"]},
+    {"label": "OMA_Sen_MSB", "aliases": ["OMA_Sen_MSB", "OMA Sen MSB"]},
+    {"label": "OMA_Sen_LSB", "aliases": ["OMA_Sen_LSB", "OMA Sen LSB"]},
+    {"label": "dTxP", "aliases": ["dTxP", "dTxP\\n"]},
+    {"label": "dRxP1", "aliases": ["dRxP1", "dRxP"]},
+]
+PRIORITY_CHOICES = ["不啟用"] + [str(i) for i in range(1, 21)]
 
 
 def load_last_folder() -> str:
@@ -276,8 +298,7 @@ def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
 def process_folder(
     folder_path: Path,
     enable_sorting: bool = False,
-    bias_min: Optional[float] = None,
-    bias_max: Optional[float] = None,
+    sorting_configs: Optional[List[Dict[str, object]]] = None,
 ) -> Tuple[Path, List[str], int]:
     files = sorted(
         [
@@ -323,16 +344,19 @@ def process_folder(
         return output_path, messages, len(merged_rows)
 
     if enable_sorting:
-        if bias_min is None or bias_max is None:
-            raise ValueError("啟用 sorting 時必須提供 DDMI_Bias(mA) 最大/最小值")
-        sorting_rows, sorting_messages = build_sorting_rows(merged_rows, bias_min, bias_max)
+        active_configs = sorting_configs or []
+        if not active_configs:
+            raise ValueError("啟用 sorting 時至少需要一個有效條件")
+
+        sorting_rows, sorting_messages, sorting_steps = build_sorting_rows(
+            merged_rows,
+            active_configs,
+        )
         messages.extend(sorting_messages)
         append_sorting_sheet(output_path, sorting_rows)
-        append_sum_sheet(output_path, merged_rows, sorting_rows)
-        messages.append(
-            f"sorting 工作表完成：符合範圍 [{bias_min}, {bias_max}] 的資料筆數 {len(sorting_rows)}"
-        )
-        messages.append("sum 工作表完成：已彙整 merged 與 sorting 的 TESTSN 清單")
+        append_sum_sheet(output_path, merged_rows, sorting_rows, sorting_steps)
+        messages.append(f"sorting 工作表完成：符合條件的資料筆數 {len(sorting_rows)}")
+        messages.append("sum 工作表完成：已彙整 merged、sorting 與篩選步驟")
 
     return output_path, messages, len(merged_rows)
 
@@ -347,41 +371,74 @@ def parse_float(value: object) -> Optional[float]:
         return None
 
 
+def normalize_column_name(name: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", str(name).upper())
+
+
+def make_column_lookup(row: Dict[str, str]) -> Dict[str, str]:
+    return {normalize_column_name(k): k for k in row.keys()}
+
+
+def get_value_by_aliases(row: Dict[str, str], aliases: List[str]) -> str:
+    lookup = make_column_lookup(row)
+    for alias in aliases:
+        key = lookup.get(normalize_column_name(alias))
+        if key:
+            return row.get(key, "")
+    return ""
+
+
 def build_sorting_rows(
     rows: List[Dict[str, str]],
-    bias_min: float,
-    bias_max: float,
-) -> Tuple[List[Dict[str, str]], List[str]]:
+    sorting_configs: List[Dict[str, object]],
+) -> Tuple[List[Dict[str, str]], List[str], List[Dict[str, object]]]:
     messages: List[str] = []
+    steps: List[Dict[str, object]] = []
     grouped: Dict[str, List[Dict[str, str]]] = {}
     for row in rows:
         grouped.setdefault(row["TESTSN"], []).append(row)
 
-    qualified_sns = set()
+    candidate_sns = set()
     for sn, sn_rows in grouped.items():
         if len(sn_rows) != 24:
             messages.append(f"sorting: TESTSN={sn} 筆數 {len(sn_rows)} 非 24，已略過")
             continue
+        candidate_sns.add(sn)
 
-        all_in_range = True
-        for row in sn_rows:
-            bias_value = parse_float(row.get("DDMI_Bias(mA)", ""))
-            if bias_value is None:
-                all_in_range = False
-                messages.append(
-                    f"sorting: TESTSN={sn} 含無法解析的 DDMI_Bias(mA)={row.get('DDMI_Bias(mA)', '')}，已略過"
-                )
-                break
-            if bias_value < bias_min or bias_value > bias_max:
-                all_in_range = False
-                break
+    ordered_configs = sorted(sorting_configs, key=lambda item: int(item["priority"]))
+    for config in ordered_configs:
+        label = str(config["label"])
+        aliases = list(config["aliases"])
+        min_value = float(config["min"])
+        max_value = float(config["max"])
 
-        if all_in_range:
-            qualified_sns.add(sn)
+        kept_sns = set()
+        for sn in sorted(candidate_sns):
+            sn_rows = grouped[sn]
+            all_in_range = True
+            for row in sn_rows:
+                current = parse_float(get_value_by_aliases(row, aliases))
+                if current is None or current < min_value or current > max_value:
+                    all_in_range = False
+                    break
+            if all_in_range:
+                kept_sns.add(sn)
 
-    sorting_rows = [row for row in rows if row["TESTSN"] in qualified_sns]
+        candidate_sns = kept_sns
+        steps.append(
+            {
+                "priority": config["priority"],
+                "field": label,
+                "range": f"[{min_value}, {max_value}]",
+                "qualified_sn": len(candidate_sns),
+            }
+        )
+        if not candidate_sns:
+            break
+
+    sorting_rows = [row for row in rows if row["TESTSN"] in candidate_sns]
     sorting_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
-    return sorting_rows, messages
+    return sorting_rows, messages, steps
 
 
 def append_sorting_sheet(
@@ -415,6 +472,7 @@ def append_sum_sheet(
     output_path: Path,
     merged_rows: List[Dict[str, str]],
     sorting_rows: List[Dict[str, str]],
+    sorting_steps: List[Dict[str, object]],
 ) -> None:
     from openpyxl import load_workbook
 
@@ -447,6 +505,18 @@ def append_sum_sheet(
             ]
         )
 
+    ws.append([])
+    ws.append(["Sorting Logic", "Range", "Priority", "Qualified SN after step"])
+    for step in sorting_steps:
+        ws.append(
+            [
+                step["field"],
+                step["range"],
+                step["priority"],
+                step["qualified_sn"],
+            ]
+        )
+
     wb.save(output_path)
 
 
@@ -458,8 +528,7 @@ class App(tk.Tk):
 
         self.folder_var = tk.StringVar(value=load_last_folder())
         self.enable_sorting_var = tk.BooleanVar(value=False)
-        self.bias_min_var = tk.StringVar()
-        self.bias_max_var = tk.StringVar()
+        self.sorting_rows_vars: List[Dict[str, tk.StringVar]] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -475,36 +544,71 @@ class App(tk.Tk):
         )
         ttk.Checkbutton(
             frame,
-            text="啟用 DDMI_Bias(mA) sorting",
+            text="啟用 sorting（可設定多個條件優先順序）",
             variable=self.enable_sorting_var,
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
-        ttk.Label(frame, text="DDMI_BIAS  min ->").grid(row=3, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.bias_min_var, width=18).grid(
-            row=3, column=1, sticky="w", pady=(0, 4)
+        ttk.Label(frame, text="Sorting 條件（Min/Max + 優先順序 1~20）：").grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(0, 4)
         )
-        ttk.Label(frame, text="max ->").grid(row=3, column=2, sticky="w")
-        ttk.Entry(frame, textvariable=self.bias_max_var, width=18).grid(
-            row=3, column=2, sticky="e", pady=(0, 4)
-        )
+
+        sorting_frame = ttk.Frame(frame)
+        sorting_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        sorting_frame.columnconfigure(0, weight=2)
+        sorting_frame.columnconfigure(1, weight=1)
+        sorting_frame.columnconfigure(2, weight=1)
+        sorting_frame.columnconfigure(3, weight=1)
+
+        ttk.Label(sorting_frame, text="欄位").grid(row=0, column=0, sticky="w")
+        ttk.Label(sorting_frame, text="Min").grid(row=0, column=1, sticky="w")
+        ttk.Label(sorting_frame, text="Max").grid(row=0, column=2, sticky="w")
+        ttk.Label(sorting_frame, text="Priority").grid(row=0, column=3, sticky="w")
+
+        for idx, field in enumerate(SORTING_FIELDS, start=1):
+            min_var = tk.StringVar()
+            max_var = tk.StringVar()
+            priority_var = tk.StringVar(value=PRIORITY_CHOICES[0])
+            self.sorting_rows_vars.append(
+                {
+                    "label": field["label"],
+                    "min_var": min_var,
+                    "max_var": max_var,
+                    "priority_var": priority_var,
+                }
+            )
+
+            ttk.Label(sorting_frame, text=field["label"]).grid(row=idx, column=0, sticky="w")
+            ttk.Entry(sorting_frame, textvariable=min_var, width=12).grid(
+                row=idx, column=1, sticky="ew", padx=(0, 4)
+            )
+            ttk.Entry(sorting_frame, textvariable=max_var, width=12).grid(
+                row=idx, column=2, sticky="ew", padx=(0, 4)
+            )
+            ttk.Combobox(
+                sorting_frame,
+                textvariable=priority_var,
+                values=PRIORITY_CHOICES,
+                state="readonly",
+                width=8,
+            ).grid(row=idx, column=3, sticky="w")
 
         ttk.Button(frame, text="執行", command=self.run_process).grid(
-            row=4, column=0, columnspan=3, sticky="ew", pady=(0, 10)
+            row=5, column=0, columnspan=3, sticky="ew", pady=(0, 10)
         )
 
-        ttk.Label(frame, text="執行訊息：").grid(row=5, column=0, sticky="w")
+        ttk.Label(frame, text="執行訊息：").grid(row=6, column=0, sticky="w")
 
         self.log_text = tk.Text(frame, wrap="word", height=20)
-        self.log_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
+        self.log_text.grid(row=7, column=0, columnspan=3, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
-        scrollbar.grid(row=6, column=3, sticky="ns")
+        scrollbar.grid(row=7, column=3, sticky="ns")
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=1)
-        frame.rowconfigure(6, weight=1)
+        frame.rowconfigure(7, weight=1)
 
     def choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.folder_var.get() or ".")
@@ -531,25 +635,46 @@ class App(tk.Tk):
         save_last_folder(folder)
 
         enable_sorting = self.enable_sorting_var.get()
-        bias_min = None
-        bias_max = None
+        sorting_configs: List[Dict[str, object]] = []
 
         if enable_sorting:
-            bias_min = parse_float(self.bias_min_var.get())
-            bias_max = parse_float(self.bias_max_var.get())
-            if bias_min is None or bias_max is None:
-                messagebox.showerror("錯誤", "請輸入有效的 DDMI_Bias(mA) 最小值與最大值")
-                return
-            if bias_min > bias_max:
-                messagebox.showerror("錯誤", "DDMI_Bias(mA) 最小值不可大於最大值")
+            used_priorities = set()
+            for field, row_vars in zip(SORTING_FIELDS, self.sorting_rows_vars):
+                priority = row_vars["priority_var"].get().strip()
+                if priority == PRIORITY_CHOICES[0]:
+                    continue
+
+                min_value = parse_float(row_vars["min_var"].get())
+                max_value = parse_float(row_vars["max_var"].get())
+                if min_value is None or max_value is None:
+                    messagebox.showerror("錯誤", f"{field['label']} 需要有效的最小值與最大值")
+                    return
+                if min_value > max_value:
+                    messagebox.showerror("錯誤", f"{field['label']} 最小值不可大於最大值")
+                    return
+                if priority in used_priorities:
+                    messagebox.showerror("錯誤", f"優先順序 {priority} 重複，請調整")
+                    return
+                used_priorities.add(priority)
+                sorting_configs.append(
+                    {
+                        "label": field["label"],
+                        "aliases": field["aliases"],
+                        "min": min_value,
+                        "max": max_value,
+                        "priority": priority,
+                    }
+                )
+
+            if not sorting_configs:
+                messagebox.showerror("錯誤", "啟用 sorting 時請至少設定一個條件")
                 return
 
         try:
             output_path, messages, total_rows = process_folder(
                 folder_path,
                 enable_sorting=enable_sorting,
-                bias_min=bias_min,
-                bias_max=bias_max,
+                sorting_configs=sorting_configs,
             )
             self.log(f"完成，總筆數：{total_rows}")
             self.log(f"輸出檔案：{output_path}")
