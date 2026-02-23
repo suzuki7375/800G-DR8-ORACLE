@@ -328,9 +328,11 @@ def process_folder(
         sorting_rows, sorting_messages = build_sorting_rows(merged_rows, bias_min, bias_max)
         messages.extend(sorting_messages)
         append_sorting_sheet(output_path, sorting_rows)
+        append_sum_sheet(output_path, merged_rows, sorting_rows)
         messages.append(
             f"sorting 工作表完成：符合範圍 [{bias_min}, {bias_max}] 的資料筆數 {len(sorting_rows)}"
         )
+        messages.append("sum 工作表完成：已彙整 merged 與 sorting 的 TESTSN 清單")
 
     return output_path, messages, len(merged_rows)
 
@@ -405,6 +407,44 @@ def append_sorting_sheet(
         ws.append(all_headers)
         for row in sorting_rows:
             ws.append([row.get(h, "") for h in all_headers])
+
+    wb.save(output_path)
+
+
+def append_sum_sheet(
+    output_path: Path,
+    merged_rows: List[Dict[str, str]],
+    sorting_rows: List[Dict[str, str]],
+) -> None:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(output_path)
+    if "sum" in wb.sheetnames:
+        del wb["sum"]
+
+    merged_sns = sorted(
+        {row["TESTSN"] for row in merged_rows},
+        key=lambda sn: str(sn),
+    )
+    sorting_sns = sorted(
+        {row["TESTSN"] for row in sorting_rows},
+        key=lambda sn: str(sn),
+    )
+
+    ws = wb.create_sheet("sum")
+    ws.append(["Item", "Value"])
+    ws.append(["Merged TESTSN count (24 rows each)", len(merged_sns)])
+    ws.append(["Sorting TESTSN count (DDMI_Bias in range, 24 rows each)", len(sorting_sns)])
+    ws.append([])
+
+    ws.append(["Merged TESTSN (24 rows each)"])
+    for sn in merged_sns:
+        ws.append([sn])
+
+    ws.append([])
+    ws.append(["Sorting TESTSN (DDMI_Bias in range, 24 rows each)"])
+    for sn in sorting_sns:
+        ws.append([sn])
 
     wb.save(output_path)
 
