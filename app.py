@@ -417,7 +417,6 @@ def append_sum_sheet(
     sorting_rows: List[Dict[str, str]],
 ) -> None:
     from openpyxl import load_workbook
-    from openpyxl.styles import PatternFill
 
     wb = load_workbook(output_path)
     if "sum" in wb.sheetnames:
@@ -431,40 +430,22 @@ def append_sum_sheet(
         {row["TESTSN"] for row in sorting_rows},
         key=lambda sn: str(sn),
     )
-    sorting_sn_set = set(sorting_sns)
-    merged_sns_display_order = sorting_sns + [
-        sn for sn in merged_sns if sn not in sorting_sn_set
-    ]
 
     ws = wb.create_sheet("sum")
-    ws.append(["Item", "Value", "SN"])
-    ws.append(
-        [
-            "Merged TESTSN count (24 rows each)",
-            len(merged_sns),
-            ", ".join(merged_sns),
-        ]
-    )
-    ws.append(
-        [
-            "Sorting TESTSN count (DDMI_Bias in range, 24 rows each)",
-            len(sorting_sns),
-            ", ".join(sorting_sns),
-        ]
-    )
+    ws.append(["Item", "Value"])
+    ws.append(["Merged T", len(merged_sns)])
+    ws.append(["Sorting T", len(sorting_sns)])
     ws.append([])
+    ws.append(["Merged TESTSN (24 rows each)", "Sorting T"])
 
-    ws.append(["Merged TESTSN (24 rows each)"])
-    highlight_fill = PatternFill(fill_type="solid", fgColor="FFF2CC")
-    for sn in merged_sns_display_order:
-        ws.append([sn])
-        if sn in sorting_sn_set:
-            ws.cell(row=ws.max_row, column=1).fill = highlight_fill
-
-    ws.append([])
-    ws.append(["Sorting TESTSN (DDMI_Bias in range, 24 rows each)"])
-    for sn in sorting_sns:
-        ws.append([sn])
+    max_len = max(len(merged_sns), len(sorting_sns))
+    for idx in range(max_len):
+        ws.append(
+            [
+                merged_sns[idx] if idx < len(merged_sns) else "",
+                sorting_sns[idx] if idx < len(sorting_sns) else "",
+            ]
+        )
 
     wb.save(output_path)
 
