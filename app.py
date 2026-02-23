@@ -258,6 +258,7 @@ def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
 
         wb = Workbook()
         ws = wb.active
+        ws.title = "merged"
         ws.append(all_headers)
         for row in rows:
             ws.append([row.get(h, "") for h in all_headers])
@@ -272,7 +273,12 @@ def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
         return output_csv
 
 
-def process_folder(folder_path: Path) -> Tuple[Path, List[str], int]:
+def process_folder(
+    folder_path: Path,
+    enable_sorting: bool = False,
+    bias_min: Optional[float] = None,
+    bias_max: Optional[float] = None,
+) -> Tuple[Path, List[str], int]:
     files = sorted(
         [
             p
@@ -314,7 +320,93 @@ def process_folder(folder_path: Path) -> Tuple[Path, List[str], int]:
     output_path = write_merged_output(folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":
         messages.append("提醒: 未安裝 openpyxl，輸出改為 merged_output.csv")
+        return output_path, messages, len(merged_rows)
+
+    if enable_sorting:
+        if bias_min is None or bias_max is None:
+            raise ValueError("啟用 sorting 時必須提供 DDMI_Bias(mA) 最大/最小值")
+        sorting_rows, sorting_messages = build_sorting_rows(merged_rows, bias_min, bias_max)
+        messages.extend(sorting_messages)
+        append_sorting_sheet(output_path, sorting_rows)
+        messages.append(
+            f"sorting 工作表完成：符合範圍 [{bias_min}, {bias_max}] 的資料筆數 {len(sorting_rows)}"
+        )
+
     return output_path, messages, len(merged_rows)
+
+
+def parse_float(value: object) -> Optional[float]:
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def build_sorting_rows(
+    rows: List[Dict[str, str]],
+    bias_min: float,
+    bias_max: float,
+) -> Tuple[List[Dict[str, str]], List[str]]:
+    messages: List[str] = []
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for row in rows:
+        grouped.setdefault(row["TESTSN"], []).append(row)
+
+    qualified_sns = set()
+    for sn, sn_rows in grouped.items():
+        if len(sn_rows) != 24:
+            messages.append(f"sorting: TESTSN={sn} 筆數 {len(sn_rows)} 非 24，已略過")
+            continue
+
+        all_in_range = True
+        for row in sn_rows:
+            bias_value = parse_float(row.get("DDMI_Bias(mA)", ""))
+            if bias_value is None:
+                all_in_range = False
+                messages.append(
+                    f"sorting: TESTSN={sn} 含無法解析的 DDMI_Bias(mA)={row.get('DDMI_Bias(mA)', '')}，已略過"
+                )
+                break
+            if bias_value < bias_min or bias_value > bias_max:
+                all_in_range = False
+                break
+
+        if all_in_range:
+            qualified_sns.add(sn)
+
+    sorting_rows = [row for row in rows if row["TESTSN"] in qualified_sns]
+    sorting_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
+    return sorting_rows, messages
+
+
+def append_sorting_sheet(
+    output_path: Path,
+    sorting_rows: List[Dict[str, str]],
+) -> None:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(output_path)
+    if "sorting" in wb.sheetnames:
+        del wb["sorting"]
+
+    all_headers: List[str] = []
+    seen = set()
+    for row in sorting_rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                all_headers.append(key)
+
+    ws = wb.create_sheet("sorting")
+    if all_headers:
+        ws.append(all_headers)
+        for row in sorting_rows:
+            ws.append([row.get(h, "") for h in all_headers])
+
+    wb.save(output_path)
 
 
 class App(tk.Tk):
@@ -324,6 +416,9 @@ class App(tk.Tk):
         self.geometry("760x500")
 
         self.folder_var = tk.StringVar(value=load_last_folder())
+        self.enable_sorting_var = tk.BooleanVar(value=False)
+        self.bias_min_var = tk.StringVar()
+        self.bias_max_var = tk.StringVar()
         self._build_ui()
 
     def _build_ui(self):
@@ -337,22 +432,38 @@ class App(tk.Tk):
         ttk.Button(frame, text="選擇資料夾", command=self.choose_folder).grid(
             row=1, column=2, sticky="ew"
         )
-        ttk.Button(frame, text="執行", command=self.run_process).grid(
-            row=2, column=0, columnspan=3, sticky="ew", pady=(0, 10)
+        ttk.Checkbutton(
+            frame,
+            text="啟用 DDMI_Bias(mA) sorting",
+            variable=self.enable_sorting_var,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        ttk.Label(frame, text="DDMI_Bias(mA) 最小值：").grid(row=3, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.bias_min_var, width=18).grid(
+            row=3, column=1, sticky="w", pady=(0, 4)
+        )
+        ttk.Label(frame, text="DDMI_Bias(mA) 最大值：").grid(row=3, column=2, sticky="w")
+        ttk.Entry(frame, textvariable=self.bias_max_var, width=18).grid(
+            row=3, column=2, sticky="e", pady=(0, 4)
         )
 
-        ttk.Label(frame, text="執行訊息：").grid(row=3, column=0, sticky="w")
+        ttk.Button(frame, text="執行", command=self.run_process).grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(0, 10)
+        )
 
-        self.log_text = tk.Text(frame, wrap="word", height=22)
-        self.log_text.grid(row=4, column=0, columnspan=3, sticky="nsew")
+        ttk.Label(frame, text="執行訊息：").grid(row=5, column=0, sticky="w")
+
+        self.log_text = tk.Text(frame, wrap="word", height=20)
+        self.log_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
-        scrollbar.grid(row=4, column=3, sticky="ns")
+        scrollbar.grid(row=6, column=3, sticky="ns")
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
-        frame.rowconfigure(4, weight=1)
+        frame.columnconfigure(2, weight=1)
+        frame.rowconfigure(6, weight=1)
 
     def choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.folder_var.get() or ".")
@@ -378,8 +489,27 @@ class App(tk.Tk):
 
         save_last_folder(folder)
 
+        enable_sorting = self.enable_sorting_var.get()
+        bias_min = None
+        bias_max = None
+
+        if enable_sorting:
+            bias_min = parse_float(self.bias_min_var.get())
+            bias_max = parse_float(self.bias_max_var.get())
+            if bias_min is None or bias_max is None:
+                messagebox.showerror("錯誤", "請輸入有效的 DDMI_Bias(mA) 最小值與最大值")
+                return
+            if bias_min > bias_max:
+                messagebox.showerror("錯誤", "DDMI_Bias(mA) 最小值不可大於最大值")
+                return
+
         try:
-            output_path, messages, total_rows = process_folder(folder_path)
+            output_path, messages, total_rows = process_folder(
+                folder_path,
+                enable_sorting=enable_sorting,
+                bias_min=bias_min,
+                bias_max=bias_max,
+            )
             self.log(f"完成，總筆數：{total_rows}")
             self.log(f"輸出檔案：{output_path}")
             for msg in messages:
