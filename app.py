@@ -39,8 +39,10 @@ def infer_temp_tag(file_path: Path) -> str:
 
 def normalize_ch_number(value: object) -> str:
     text = str(value).strip()
-    m = re.match(r"^(\d+)", text)
-    return m.group(1) if m else text
+    m = re.search(r"(\d+)", text)
+    if not m:
+        return text
+    return str(int(m.group(1)))
 
 
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
