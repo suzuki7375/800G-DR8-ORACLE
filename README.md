@@ -14,11 +14,11 @@
 - 輸出排序為同一 `TESTSN` 下依序：`1~8_RT`、`1~8_LT`、`1~8_HT`。
 - `CHNumber` 會依檔名自動附加 `_RT`, `_LT`, `_HT`（若無法辨識則為 `_UNKN`）。
 - 若未安裝 `openpyxl`，會退回輸出 `merged_output.csv`。
-- 可選擇啟用 `DDMI_Bias(mA)` sorting 篩選，新增 `sorting` 工作表保存符合範圍的資料。
+- 可選擇啟用 sorting 篩選（如 `DDMI_Bias(mA)`、`Power(dBm)` 等欄位），新增 `sorting` 工作表保存符合範圍的資料。
 - 啟用 sorting 後會把 `merged` 工作表改為卡控後結果，原始合併資料保留在 `merged_raw`。
 - 啟用 sorting 後會額外建立 `sum` 工作表，彙整：
   - 合併後符合 24 筆規則的 `TESTSN` 數量與清單。
-  - 依 `DDMI_Bias(mA)` sorting 後仍符合 24 筆規則的 `TESTSN` 數量與清單。
+  - 依所選 sorting 條件卡控後仍符合 24 筆規則的 `TESTSN` 數量與清單。
 - 完成視窗會顯示：
   - 合併後符合 24 筆規則的 `TESTSN`（顆數）。
   - 最後條件 sorting 後符合的 `TESTSN`（顆數）。
