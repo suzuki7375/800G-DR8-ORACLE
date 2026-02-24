@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -37,6 +38,7 @@ SORTING_FIELDS = [
     {"label": "dRxP1", "aliases": ["dRxP1", "dRxP"]},
 ]
 PRIORITY_CHOICES = ["不啟用"] + [str(i) for i in range(1, 21)]
+NON_NUMERIC_OUTPUT_COLUMNS = {"TESTSN", "CHNumber", "TESTRESULT", "TESTDATE"}
 
 
 def load_ui_config() -> Dict[str, object]:
@@ -301,7 +303,7 @@ def write_merged_output(output_folder_path: Path, rows: List[Dict[str, str]]) ->
         ws.title = "merged"
         ws.append(all_headers)
         for row in rows:
-            ws.append([row.get(h, "") for h in all_headers])
+            ws.append(build_output_row(row, all_headers))
         wb.save(output_xlsx)
         return output_xlsx
     except ImportError:
@@ -309,7 +311,7 @@ def write_merged_output(output_folder_path: Path, rows: List[Dict[str, str]]) ->
         with output_csv.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=all_headers)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows([{h: convert_output_value(h, row.get(h, "")) for h in all_headers} for row in rows])
         return output_csv
 
 
@@ -405,6 +407,33 @@ def parse_float(value: object) -> Optional[float]:
         return float(text)
     except ValueError:
         return None
+
+
+def convert_output_value(header: str, value: object) -> object:
+    if value is None:
+        return ""
+
+    if header in NON_NUMERIC_OUTPUT_COLUMNS or not isinstance(value, str):
+        return value
+
+    text = value.strip()
+    if not text:
+        return ""
+
+    if not re.fullmatch(r"[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?", text):
+        return value
+
+    number = float(text)
+    if not math.isfinite(number):
+        return value
+
+    if re.fullmatch(r"[+-]?\d+", text):
+        return int(text)
+    return number
+
+
+def build_output_row(row: Dict[str, str], headers: List[str]) -> List[object]:
+    return [convert_output_value(h, row.get(h, "")) for h in headers]
 
 
 def normalize_column_name(name: str) -> str:
@@ -522,7 +551,7 @@ def append_sorting_sheet(
     if all_headers:
         ws.append(all_headers)
         for row in sorting_rows:
-            ws.append([row.get(h, "") for h in all_headers])
+            ws.append(build_output_row(row, all_headers))
 
     wb.save(output_path)
 
@@ -555,7 +584,7 @@ def replace_merged_with_sorted_rows(
     if all_headers:
         ws.append(all_headers)
         for row in sorting_rows:
-            ws.append([row.get(h, "") for h in all_headers])
+            ws.append(build_output_row(row, all_headers))
 
     wb.save(output_path)
 
