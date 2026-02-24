@@ -30,7 +30,10 @@ SORTING_FIELDS = [
     {"label": "Undershoot", "aliases": ["Undershoot"]},
     {"label": "OMA_Sen_MSB", "aliases": ["OMA_Sen_MSB", "OMA Sen MSB"]},
     {"label": "OMA_Sen_LSB", "aliases": ["OMA_Sen_LSB", "OMA Sen LSB"]},
-    {"label": "dTxP", "aliases": ["dTxP", "dTxP\\n"]},
+    {
+        "label": "dTxP",
+        "aliases": ["dTxP", "dTxP\\n", "dTxP(dB)", "dTxP (dB)", "DTXP"],
+    },
     {"label": "dRxP1", "aliases": ["dRxP1", "dRxP"]},
 ]
 PRIORITY_CHOICES = ["不啟用"] + [str(i) for i in range(1, 21)]
