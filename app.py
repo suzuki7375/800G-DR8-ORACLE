@@ -36,19 +36,34 @@ SORTING_FIELDS = [
 PRIORITY_CHOICES = ["不啟用"] + [str(i) for i in range(1, 21)]
 
 
-def load_last_folder() -> str:
+def load_ui_config() -> Dict[str, object]:
+    default: Dict[str, object] = {
+        "input_folder": "",
+        "output_folder": "",
+        "enable_sorting": False,
+        "sorting_rows": [],
+    }
+
     if not CONFIG_PATH.exists():
-        return ""
+        return default
+
     try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return data.get("last_folder", "")
+        raw = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     except Exception:
-        return ""
+        return default
+
+    if "input_folder" not in raw and "last_folder" in raw:
+        raw["input_folder"] = raw.get("last_folder", "")
+
+    config = dict(default)
+    if isinstance(raw, dict):
+        config.update(raw)
+    return config
 
 
-def save_last_folder(folder: str) -> None:
+def save_ui_config(config: Dict[str, object]) -> None:
     CONFIG_PATH.write_text(
-        json.dumps({"last_folder": folder}, ensure_ascii=False, indent=2),
+        json.dumps(config, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -265,7 +280,7 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
     return valid_rows, issues
 
 
-def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
+def write_merged_output(output_folder_path: Path, rows: List[Dict[str, str]]) -> Path:
     all_headers: List[str] = []
     seen = set()
     for row in rows:
@@ -274,7 +289,7 @@ def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
                 seen.add(key)
                 all_headers.append(key)
 
-    output_xlsx = folder_path / "merged_output.xlsx"
+    output_xlsx = output_folder_path / "merged_output.xlsx"
     try:
         from openpyxl import Workbook
 
@@ -287,7 +302,7 @@ def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
         wb.save(output_xlsx)
         return output_xlsx
     except ImportError:
-        output_csv = folder_path / "merged_output.csv"
+        output_csv = output_folder_path / "merged_output.csv"
         with output_csv.open("w", encoding="utf-8-sig", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=all_headers)
             writer.writeheader()
@@ -296,14 +311,15 @@ def write_merged_output(folder_path: Path, rows: List[Dict[str, str]]) -> Path:
 
 
 def process_folder(
-    folder_path: Path,
+    input_folder_path: Path,
+    output_folder_path: Path,
     enable_sorting: bool = False,
     sorting_configs: Optional[List[Dict[str, object]]] = None,
 ) -> Tuple[Path, List[str], int, int, Optional[int]]:
     files = sorted(
         [
             p
-            for p in folder_path.iterdir()
+            for p in input_folder_path.iterdir()
             if p.is_file() and p.suffix.lower() in VALID_EXTENSIONS
         ]
     )
@@ -339,7 +355,7 @@ def process_folder(
 
     merged_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
 
-    output_path = write_merged_output(folder_path, merged_rows)
+    output_path = write_merged_output(output_folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":
         messages.append("提醒: 未安裝 openpyxl，輸出改為 merged_output.csv")
         return (
@@ -593,10 +609,17 @@ class App(tk.Tk):
         self.title("Excel 合併工具")
         self.geometry("760x500")
 
-        self.folder_var = tk.StringVar(value=load_last_folder())
-        self.enable_sorting_var = tk.BooleanVar(value=False)
+        self.ui_config = load_ui_config()
+        self.folder_var = tk.StringVar(value=str(self.ui_config.get("input_folder", "")))
+        self.output_folder_var = tk.StringVar(
+            value=str(self.ui_config.get("output_folder", ""))
+        )
+        self.enable_sorting_var = tk.BooleanVar(
+            value=bool(self.ui_config.get("enable_sorting", False))
+        )
         self.sorting_rows_vars: List[Dict[str, tk.StringVar]] = []
         self._build_ui()
+        self._apply_saved_sorting_rows()
 
     def _build_ui(self):
         frame = ttk.Frame(self, padding=12)
@@ -609,18 +632,27 @@ class App(tk.Tk):
         ttk.Button(frame, text="選擇資料夾", command=self.choose_folder).grid(
             row=1, column=2, sticky="ew"
         )
+
+        ttk.Label(frame, text="輸出檔案資料夾：").grid(row=2, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.output_folder_var, width=80).grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(4, 8)
+        )
+        ttk.Button(frame, text="選擇資料夾", command=self.choose_output_folder).grid(
+            row=3, column=2, sticky="ew"
+        )
+
         ttk.Checkbutton(
             frame,
             text="啟用 sorting（可設定多個條件優先順序）",
             variable=self.enable_sorting_var,
-        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
         ttk.Label(frame, text="Sorting 條件（Min/Max + 優先順序 1~20）：").grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(0, 4)
+            row=5, column=0, columnspan=3, sticky="w", pady=(0, 4)
         )
 
         sorting_frame = ttk.Frame(frame)
-        sorting_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        sorting_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         sorting_frame.columnconfigure(0, weight=2)
         sorting_frame.columnconfigure(1, weight=1)
         sorting_frame.columnconfigure(2, weight=1)
@@ -660,28 +692,76 @@ class App(tk.Tk):
             ).grid(row=idx, column=3, sticky="w")
 
         ttk.Button(frame, text="執行", command=self.run_process).grid(
-            row=5, column=0, columnspan=3, sticky="ew", pady=(0, 10)
+            row=7, column=0, columnspan=3, sticky="ew", pady=(0, 10)
         )
 
-        ttk.Label(frame, text="執行訊息：").grid(row=6, column=0, sticky="w")
+        ttk.Label(frame, text="執行訊息：").grid(row=8, column=0, sticky="w")
 
         self.log_text = tk.Text(frame, wrap="word", height=20)
-        self.log_text.grid(row=7, column=0, columnspan=3, sticky="nsew")
+        self.log_text.grid(row=9, column=0, columnspan=3, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
-        scrollbar.grid(row=7, column=3, sticky="ns")
+        scrollbar.grid(row=9, column=3, sticky="ns")
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=1)
-        frame.rowconfigure(7, weight=1)
+        frame.rowconfigure(9, weight=1)
 
     def choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.folder_var.get() or ".")
         if folder:
             self.folder_var.set(folder)
-            save_last_folder(folder)
+
+    def choose_output_folder(self):
+        folder = filedialog.askdirectory(initialdir=self.output_folder_var.get() or ".")
+        if folder:
+            self.output_folder_var.set(folder)
+
+    def _collect_ui_config(self) -> Dict[str, object]:
+        sorting_rows: List[Dict[str, str]] = []
+        for row in self.sorting_rows_vars:
+            sorting_rows.append(
+                {
+                    "label": row["label"],
+                    "min": row["min_var"].get().strip(),
+                    "max": row["max_var"].get().strip(),
+                    "priority": row["priority_var"].get().strip(),
+                }
+            )
+
+        return {
+            "input_folder": self.folder_var.get().strip(),
+            "output_folder": self.output_folder_var.get().strip(),
+            "enable_sorting": self.enable_sorting_var.get(),
+            "sorting_rows": sorting_rows,
+        }
+
+    def _save_ui_config(self) -> None:
+        save_ui_config(self._collect_ui_config())
+
+    def _apply_saved_sorting_rows(self) -> None:
+        saved_rows = self.ui_config.get("sorting_rows", [])
+        if not isinstance(saved_rows, list):
+            return
+
+        saved_by_label = {
+            str(item.get("label", "")): item
+            for item in saved_rows
+            if isinstance(item, dict)
+        }
+        for row in self.sorting_rows_vars:
+            saved = saved_by_label.get(row["label"])
+            if not saved:
+                continue
+
+            row["min_var"].set(str(saved.get("min", "")))
+            row["max_var"].set(str(saved.get("max", "")))
+            priority = str(saved.get("priority", PRIORITY_CHOICES[0]))
+            if priority not in PRIORITY_CHOICES:
+                priority = PRIORITY_CHOICES[0]
+            row["priority_var"].set(priority)
 
     def log(self, text: str):
         self.log_text.insert("end", text + "\n")
@@ -694,12 +774,19 @@ class App(tk.Tk):
             messagebox.showerror("錯誤", "請先選擇資料夾")
             return
 
+        output_folder = self.output_folder_var.get().strip() or folder
+
         folder_path = Path(folder)
         if not folder_path.exists() or not folder_path.is_dir():
             messagebox.showerror("錯誤", "資料夾路徑不存在")
             return
 
-        save_last_folder(folder)
+        output_folder_path = Path(output_folder)
+        if not output_folder_path.exists() or not output_folder_path.is_dir():
+            messagebox.showerror("錯誤", "輸出資料夾路徑不存在")
+            return
+
+        self._save_ui_config()
 
         enable_sorting = self.enable_sorting_var.get()
         sorting_configs: List[Dict[str, object]] = []
@@ -740,6 +827,7 @@ class App(tk.Tk):
         try:
             output_path, messages, total_rows, qualified_24_sn_count, sorting_qualified_sn_count = process_folder(
                 folder_path,
+                output_folder_path,
                 enable_sorting=enable_sorting,
                 sorting_configs=sorting_configs,
             )
