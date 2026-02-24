@@ -299,7 +299,7 @@ def process_folder(
     folder_path: Path,
     enable_sorting: bool = False,
     sorting_configs: Optional[List[Dict[str, object]]] = None,
-) -> Tuple[Path, List[str], int]:
+) -> Tuple[Path, List[str], int, int, Optional[int]]:
     files = sorted(
         [
             p
@@ -335,14 +335,22 @@ def process_folder(
     merged_rows = [row for row in merged_rows if row["TESTSN"] in qualified_sns]
     if not merged_rows:
         raise ValueError("沒有任何 TESTSN 符合 24 筆規則可輸出")
+    qualified_24_sn_count = len(qualified_sns)
 
     merged_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
 
     output_path = write_merged_output(folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":
         messages.append("提醒: 未安裝 openpyxl，輸出改為 merged_output.csv")
-        return output_path, messages, len(merged_rows)
+        return (
+            output_path,
+            messages,
+            len(merged_rows),
+            qualified_24_sn_count,
+            None,
+        )
 
+    sorting_qualified_sn_count: Optional[int] = None
     if enable_sorting:
         active_configs = sorting_configs or []
         if not active_configs:
@@ -355,10 +363,17 @@ def process_folder(
         messages.extend(sorting_messages)
         append_sorting_sheet(output_path, sorting_rows)
         append_sum_sheet(output_path, merged_rows, sorting_rows, sorting_steps)
+        sorting_qualified_sn_count = len({row["TESTSN"] for row in sorting_rows})
         messages.append(f"sorting 工作表完成：符合條件的資料筆數 {len(sorting_rows)}")
         messages.append("sum 工作表完成：已彙整 merged、sorting 與篩選步驟")
 
-    return output_path, messages, len(merged_rows)
+    return (
+        output_path,
+        messages,
+        len(merged_rows),
+        qualified_24_sn_count,
+        sorting_qualified_sn_count,
+    )
 
 
 def parse_float(value: object) -> Optional[float]:
@@ -722,19 +737,63 @@ class App(tk.Tk):
                 return
 
         try:
-            output_path, messages, total_rows = process_folder(
+            output_path, messages, total_rows, qualified_24_sn_count, sorting_qualified_sn_count = process_folder(
                 folder_path,
                 enable_sorting=enable_sorting,
                 sorting_configs=sorting_configs,
             )
             self.log(f"完成，總筆數：{total_rows}")
             self.log(f"輸出檔案：{output_path}")
+            self.log(f"符合 24 筆的 TESTSN 數量：{qualified_24_sn_count}")
+            if enable_sorting:
+                self.log(f"sorting 最後符合條件的 TESTSN 數量：{sorting_qualified_sn_count or 0}")
             for msg in messages:
                 self.log(msg)
-            messagebox.showinfo("完成", f"合併完成：{output_path}")
+            messagebox.showinfo(
+                "完成",
+                self._build_completion_message(
+                    output_path=output_path,
+                    enable_sorting=enable_sorting,
+                    sorting_configs=sorting_configs,
+                    qualified_24_sn_count=qualified_24_sn_count,
+                    sorting_qualified_sn_count=sorting_qualified_sn_count,
+                ),
+            )
         except Exception as exc:
             self.log(f"執行失敗：{exc}")
             messagebox.showerror("錯誤", str(exc))
+
+    def _build_completion_message(
+        self,
+        output_path: Path,
+        enable_sorting: bool,
+        sorting_configs: List[Dict[str, object]],
+        qualified_24_sn_count: int,
+        sorting_qualified_sn_count: Optional[int],
+    ) -> str:
+        lines = [
+            f"合併完成：{output_path}",
+            f"符合 24 筆的 TESTSN 數量：{qualified_24_sn_count} 顆",
+        ]
+        if enable_sorting:
+            lines.append(
+                f"最後條件 sorting 後符合的 TESTSN 數量：{sorting_qualified_sn_count or 0} 顆"
+            )
+            lines.append("已選擇 sorting 條件：")
+            for config in sorted(sorting_configs, key=lambda item: int(item["priority"])):
+                lines.append(
+                    "  - P{priority} {label}: Min={min_value}, Max={max_value}".format(
+                        priority=config["priority"],
+                        label=config["label"],
+                        min_value=config["min"],
+                        max_value=config["max"],
+                    )
+                )
+        else:
+            lines.append("最後條件 sorting 後符合的 TESTSN 數量：未啟用 sorting")
+            lines.append("已選擇 sorting 條件：未啟用")
+
+        return "\n".join(lines)
 
 
 if __name__ == "__main__":

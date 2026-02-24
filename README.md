@@ -18,6 +18,10 @@
 - 啟用 sorting 後會額外建立 `sum` 工作表，彙整：
   - 合併後符合 24 筆規則的 `TESTSN` 數量與清單。
   - 依 `DDMI_Bias(mA)` sorting 後仍符合 24 筆規則的 `TESTSN` 數量與清單。
+- 完成視窗會顯示：
+  - 合併後符合 24 筆規則的 `TESTSN`（顆數）。
+  - 最後條件 sorting 後符合的 `TESTSN`（顆數）。
+  - 本次所選 sorting 項目、Min/Max 與 Priority。
 
 ## 執行
 ```bash
