@@ -427,7 +427,8 @@ def build_sorting_rows(
         min_value = float(config["min"])
         max_value = float(config["max"])
 
-        before_count = len(candidate_sns)
+        previous_candidate_sns = set(candidate_sns)
+        before_count = len(previous_candidate_sns)
 
         kept_sns = set()
         for sn in sorted(candidate_sns):
@@ -443,7 +444,7 @@ def build_sorting_rows(
 
         candidate_sns = kept_sns
         removed_sns = sorted(
-            [sn for sn in grouped.keys() if sn not in candidate_sns],
+            [sn for sn in previous_candidate_sns if sn not in candidate_sns],
             key=lambda sn: str(sn),
         )
         steps.append(
