@@ -18,6 +18,10 @@ SORTING_FIELDS = [
         "label": "DDMI_Bias(mA)",
         "aliases": ["DDMI_Bias(mA)", "DDMI BIAS", "DDMI_BIAS"],
     },
+    {
+        "label": "Power(dBm)",
+        "aliases": ["Power(dBm)", "Power", "POWER"],
+    },
     {"label": "Outer_OMA(dB)", "aliases": ["Outer_OMA(dB)", "Outer OMA"]},
     {"label": "Outer_ER(dB)", "aliases": ["Outer_ER(dB)", "Outer ER"]},
     {"label": "TDECQ(dB)", "aliases": ["TDECQ(dB)", "TDECQ"]},
