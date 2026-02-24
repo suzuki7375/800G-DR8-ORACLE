@@ -381,9 +381,11 @@ def process_folder(
         )
         messages.extend(sorting_messages)
         append_sorting_sheet(output_path, sorting_rows)
+        replace_merged_with_sorted_rows(output_path, sorting_rows)
         append_sum_sheet(output_path, merged_rows, sorting_rows, sorting_steps)
         sorting_qualified_sn_count = len({row["TESTSN"] for row in sorting_rows})
         messages.append(f"sorting 工作表完成：符合條件的資料筆數 {len(sorting_rows)}")
+        messages.append("merged 工作表已套用 sorting 卡控；原始資料保留在 merged_raw")
         messages.append("sum 工作表完成：已彙整 merged、sorting 與篩選步驟")
 
     return (
@@ -517,6 +519,39 @@ def append_sorting_sheet(
                 all_headers.append(key)
 
     ws = wb.create_sheet("sorting")
+    if all_headers:
+        ws.append(all_headers)
+        for row in sorting_rows:
+            ws.append([row.get(h, "") for h in all_headers])
+
+    wb.save(output_path)
+
+
+def replace_merged_with_sorted_rows(
+    output_path: Path,
+    sorting_rows: List[Dict[str, str]],
+) -> None:
+    """Keep original merged data in `merged_raw`, and show card-controlled rows in `merged`."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(output_path)
+
+    if "merged_raw" in wb.sheetnames:
+        del wb["merged_raw"]
+
+    if "merged" in wb.sheetnames:
+        ws_merged = wb["merged"]
+        ws_merged.title = "merged_raw"
+
+    all_headers: List[str] = []
+    seen = set()
+    for row in sorting_rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                all_headers.append(key)
+
+    ws = wb.create_sheet("merged", 0)
     if all_headers:
         ws.append(all_headers)
         for row in sorting_rows:
