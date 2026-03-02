@@ -153,6 +153,23 @@ def merged_sheet_sort_key(row: Dict[str, str]) -> Tuple[str, Tuple[int, int]]:
     return (row.get("TESTSN", ""), channel_sort_key(row.get("CHNumber", "")))
 
 
+def failed_device_sheet_channel_sort_key(ch_tag: str) -> Tuple[int, int]:
+    m = re.match(r"^(\d+)_([A-Z]+)$", str(ch_tag).strip().upper())
+    if not m:
+        return (99, 99)
+
+    ch, tag = int(m.group(1)), m.group(2)
+    tag_order = {"RT": 0, "LT": 1, "HT": 2}
+    return (ch, tag_order.get(tag, 3))
+
+
+def failed_device_sheet_sort_key(row: Dict[str, str]) -> Tuple[str, Tuple[int, int]]:
+    return (
+        row.get("TESTSN", ""),
+        failed_device_sheet_channel_sort_key(row.get("CHNumber", "")),
+    )
+
+
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
     with file_path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -650,7 +667,7 @@ def append_failed_device_sheet(
                 all_headers.append(key)
 
     if all_headers:
-        failed_device_rows.sort(key=merged_sheet_sort_key)
+        failed_device_rows.sort(key=failed_device_sheet_sort_key)
         ws.append(all_headers)
         for row in failed_device_rows:
             ws.append(build_output_row(row, all_headers))
