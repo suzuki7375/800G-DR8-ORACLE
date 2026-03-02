@@ -193,26 +193,26 @@ def read_table_rows(file_path: Path) -> List[Dict[str, str]]:
 
 def validate_and_transform_file(
     file_path: Path,
-) -> Tuple[List[Dict[str, str]], List[str], List[Dict[str, str]]]:
+) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], List[str], List[Dict[str, str]]]:
     issues: List[str] = []
     failed_devices: List[Dict[str, str]] = []
 
     try:
         rows = read_table_rows(file_path)
     except Exception as exc:
-        return [], [f"{file_path.name}: 讀取失敗 ({exc})"], []
+        return [], [], [f"{file_path.name}: 讀取失敗 ({exc})"], []
 
     if not rows:
-        return [], [f"{file_path.name}: 無資料"], []
+        return [], [], [f"{file_path.name}: 無資料"], []
 
     headers = list(rows[0].keys())
     sn_key = find_sn_column(headers)
     if not sn_key:
-        return [], [f"{file_path.name}: 缺少必要欄位 ['TESTSN' 或 'SN']"], []
+        return [], [], [f"{file_path.name}: 缺少必要欄位 ['TESTSN' 或 'SN']"], []
 
     missing = REQUIRED_COLUMNS - set(headers)
     if missing:
-        return [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"], []
+        return [], [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"], []
 
     file_tag = infer_temp_tag(file_path)
 
@@ -237,6 +237,7 @@ def validate_and_transform_file(
         grouped.setdefault(sn, []).append(normalized)
 
     valid_rows: List[Dict[str, str]] = []
+    fail_rows: List[Dict[str, str]] = []
     expected = {str(i) for i in range(1, 9)}
 
     for sn, group in grouped.items():
@@ -311,7 +312,34 @@ def validate_and_transform_file(
             item.pop("TEMP_TAG", None)
             valid_rows.append(item)
 
-    return valid_rows, issues, failed_devices
+        selected_fail_rows: List[Dict[str, str]] = []
+        failed_fail_channels: List[str] = []
+        for ch in sorted(expected, key=int):
+            ch_rows = by_channel[ch]
+            fail_candidates = [row for row in ch_rows if row["TESTRESULT"] == "FAIL"]
+            fail_row = None
+            if fail_candidates:
+                fail_row = max(
+                    fail_candidates,
+                    key=lambda row: (
+                        parse_testdate(row.get("TESTDATE", "")) or datetime.min,
+                    ),
+                )
+            if not fail_row:
+                failed_fail_channels.append(ch)
+                continue
+            selected_fail_rows.append(fail_row)
+
+        if failed_fail_channels:
+            continue
+
+        for g in selected_fail_rows:
+            item = dict(g)
+            item["CHNumber"] = f"{item['CHNumber']}_{item['TEMP_TAG']}"
+            item.pop("TEMP_TAG", None)
+            fail_rows.append(item)
+
+    return valid_rows, fail_rows, issues, failed_devices
 
 
 def write_merged_output(output_folder_path: Path, rows: List[Dict[str, str]]) -> Path:
@@ -363,14 +391,14 @@ def process_folder(
         raise ValueError("資料夾內沒有 xlsx/csv 檔案")
 
     merged_rows: List[Dict[str, str]] = []
-    failed_device_records: List[Dict[str, str]] = []
+    failed_sheet_rows: List[Dict[str, str]] = []
     messages: List[str] = []
 
     for file_path in files:
-        transformed, issues, failed_devices = validate_and_transform_file(file_path)
+        transformed, fail_rows, issues, _ = validate_and_transform_file(file_path)
         messages.extend(issues)
         merged_rows.extend(transformed)
-        failed_device_records.extend(failed_devices)
+        failed_sheet_rows.extend(fail_rows)
 
     if not merged_rows:
         raise ValueError("沒有任何符合規則的資料可合併")
@@ -408,9 +436,20 @@ def process_folder(
     sorting_qualified_sn_count: Optional[int] = None
 
     if enable_failed_device_sheet:
-        append_failed_device_sheet(output_path, failed_device_records)
-        failed_device_count = len({item["TESTSN"] for item in failed_device_records})
-        messages.append(f"failed device 工作表完成：共 {failed_device_count} 顆 TESTSN")
+        failed_count_by_sn: Dict[str, int] = {}
+        for row in failed_sheet_rows:
+            sn = row["TESTSN"]
+            failed_count_by_sn[sn] = failed_count_by_sn.get(sn, 0) + 1
+
+        qualified_failed_sns = {sn for sn, cnt in failed_count_by_sn.items() if cnt == 24}
+        failed_sheet_rows = [row for row in failed_sheet_rows if row["TESTSN"] in qualified_failed_sns]
+        failed_sheet_rows.sort(
+            key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", "")))
+        )
+
+        append_failed_device_sheet(output_path, failed_sheet_rows)
+        failed_device_count = len(qualified_failed_sns)
+        messages.append(f"failed device 工作表完成：共 {failed_device_count} 顆 TESTSN（完整24筆 FAIL資料）")
 
     if enable_sorting:
         active_configs = sorting_configs or []
@@ -596,7 +635,7 @@ def append_sorting_sheet(
 
 def append_failed_device_sheet(
     output_path: Path,
-    failed_device_records: List[Dict[str, str]],
+    failed_device_rows: List[Dict[str, str]],
 ) -> None:
     from openpyxl import load_workbook
 
@@ -605,21 +644,22 @@ def append_failed_device_sheet(
         del wb["failed device"]
 
     ws = wb.create_sheet("failed device")
-    headers = ["TESTSN", "SourceFile", "Reason"]
-    ws.append(headers)
 
-    unique_records = []
+    all_headers: List[str] = []
     seen = set()
-    for item in failed_device_records:
-        row_key = (item.get("TESTSN", ""), item.get("SourceFile", ""), item.get("Reason", ""))
-        if row_key in seen:
-            continue
-        seen.add(row_key)
-        unique_records.append(item)
+    for row in failed_device_rows:
+        for key in row.keys():
+            if key not in seen:
+                seen.add(key)
+                all_headers.append(key)
 
-    unique_records.sort(key=lambda item: (str(item.get("TESTSN", "")), str(item.get("SourceFile", ""))))
-    for item in unique_records:
-        ws.append([item.get("TESTSN", ""), item.get("SourceFile", ""), item.get("Reason", "")])
+    if all_headers:
+        failed_device_rows.sort(
+            key=lambda row: (row.get("TESTSN", ""), channel_sort_key(row.get("CHNumber", "")))
+        )
+        ws.append(all_headers)
+        for row in failed_device_rows:
+            ws.append(build_output_row(row, all_headers))
 
     wb.save(output_path)
 
