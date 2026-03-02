@@ -436,20 +436,14 @@ def process_folder(
     sorting_qualified_sn_count: Optional[int] = None
 
     if enable_failed_device_sheet:
-        failed_count_by_sn: Dict[str, int] = {}
-        for row in failed_sheet_rows:
-            sn = row["TESTSN"]
-            failed_count_by_sn[sn] = failed_count_by_sn.get(sn, 0) + 1
-
-        qualified_failed_sns = {sn for sn, cnt in failed_count_by_sn.items() if cnt == 24}
-        failed_sheet_rows = [row for row in failed_sheet_rows if row["TESTSN"] in qualified_failed_sns]
+        qualified_failed_sns = {row["TESTSN"] for row in failed_sheet_rows}
         failed_sheet_rows.sort(
             key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", "")))
         )
 
         append_failed_device_sheet(output_path, failed_sheet_rows)
         failed_device_count = len(qualified_failed_sns)
-        messages.append(f"failed device 工作表完成：共 {failed_device_count} 顆 TESTSN（完整24筆 FAIL資料）")
+        messages.append(f"failed device 工作表完成：共 {failed_device_count} 顆 TESTSN（至少1筆 FAIL資料）")
 
     if enable_sorting:
         active_configs = sorting_configs or []
