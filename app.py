@@ -149,6 +149,10 @@ def channel_sort_key(ch_tag: str) -> Tuple[int, int]:
     return (tag_order.get(tag, 3), ch)
 
 
+def merged_sheet_sort_key(row: Dict[str, str]) -> Tuple[str, Tuple[int, int]]:
+    return (row.get("TESTSN", ""), channel_sort_key(row.get("CHNumber", "")))
+
+
 def read_csv_rows(file_path: Path) -> List[Dict[str, str]]:
     with file_path.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -418,7 +422,7 @@ def process_folder(
         raise ValueError("沒有任何 TESTSN 符合 24 筆規則可輸出")
     qualified_24_sn_count = len(qualified_sns)
 
-    merged_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
+    merged_rows.sort(key=merged_sheet_sort_key)
 
     output_path = write_merged_output(output_folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":
@@ -437,9 +441,7 @@ def process_folder(
 
     if enable_failed_device_sheet:
         qualified_failed_sns = {row["TESTSN"] for row in failed_sheet_rows}
-        failed_sheet_rows.sort(
-            key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", "")))
-        )
+        failed_sheet_rows.sort(key=merged_sheet_sort_key)
 
         append_failed_device_sheet(output_path, failed_sheet_rows)
         failed_device_count = len(qualified_failed_sns)
@@ -596,7 +598,7 @@ def build_sorting_rows(
             break
 
     sorting_rows = [row for row in rows if row["TESTSN"] in candidate_sns]
-    sorting_rows.sort(key=lambda row: (row["TESTSN"], channel_sort_key(row.get("CHNumber", ""))))
+    sorting_rows.sort(key=merged_sheet_sort_key)
     return sorting_rows, messages, steps
 
 
@@ -648,9 +650,7 @@ def append_failed_device_sheet(
                 all_headers.append(key)
 
     if all_headers:
-        failed_device_rows.sort(
-            key=lambda row: (row.get("TESTSN", ""), channel_sort_key(row.get("CHNumber", "")))
-        )
+        failed_device_rows.sort(key=merged_sheet_sort_key)
         ws.append(all_headers)
         for row in failed_device_rows:
             ws.append(build_output_row(row, all_headers))
