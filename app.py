@@ -50,6 +50,7 @@ def load_ui_config() -> Dict[str, object]:
         "input_folder": "",
         "output_folder": "",
         "enable_sorting": False,
+        "enable_failed_device_sheet": False,
         "sorting_rows": [],
     }
 
@@ -190,25 +191,28 @@ def read_table_rows(file_path: Path) -> List[Dict[str, str]]:
     return read_xlsx_rows(file_path)
 
 
-def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], List[str]]:
+def validate_and_transform_file(
+    file_path: Path,
+) -> Tuple[List[Dict[str, str]], List[str], List[Dict[str, str]]]:
     issues: List[str] = []
+    failed_devices: List[Dict[str, str]] = []
 
     try:
         rows = read_table_rows(file_path)
     except Exception as exc:
-        return [], [f"{file_path.name}: 讀取失敗 ({exc})"]
+        return [], [f"{file_path.name}: 讀取失敗 ({exc})"], []
 
     if not rows:
-        return [], [f"{file_path.name}: 無資料"]
+        return [], [f"{file_path.name}: 無資料"], []
 
     headers = list(rows[0].keys())
     sn_key = find_sn_column(headers)
     if not sn_key:
-        return [], [f"{file_path.name}: 缺少必要欄位 ['TESTSN' 或 'SN']"]
+        return [], [f"{file_path.name}: 缺少必要欄位 ['TESTSN' 或 'SN']"], []
 
     missing = REQUIRED_COLUMNS - set(headers)
     if missing:
-        return [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"]
+        return [], [f"{file_path.name}: 缺少必要欄位 {sorted(missing)}"], []
 
     file_tag = infer_temp_tag(file_path)
 
@@ -247,12 +251,26 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
             issues.append(
                 f"{file_path.name}: TESTSN={sn} 缺少 CHNumber={missing_channels}，已略過"
             )
+            failed_devices.append(
+                {
+                    "TESTSN": sn,
+                    "SourceFile": file_path.name,
+                    "Reason": f"缺少 CHNumber={missing_channels}",
+                }
+            )
             continue
 
         if any(ch not in expected for ch in channel_set):
             extra_channels = sorted(channel_set - expected)
             issues.append(
                 f"{file_path.name}: TESTSN={sn} 發現非 1~8 的 CHNumber={extra_channels}，已略過"
+            )
+            failed_devices.append(
+                {
+                    "TESTSN": sn,
+                    "SourceFile": file_path.name,
+                    "Reason": f"發現非 1~8 的 CHNumber={extra_channels}",
+                }
             )
             continue
 
@@ -278,6 +296,13 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
             issues.append(
                 f"{file_path.name}: TESTSN={sn} CHNumber={failed_channels} 沒有 PASS，已略過"
             )
+            failed_devices.append(
+                {
+                    "TESTSN": sn,
+                    "SourceFile": file_path.name,
+                    "Reason": f"CHNumber={failed_channels} 沒有 PASS",
+                }
+            )
             continue
 
         for g in selected_rows:
@@ -286,7 +311,7 @@ def validate_and_transform_file(file_path: Path) -> Tuple[List[Dict[str, str]], 
             item.pop("TEMP_TAG", None)
             valid_rows.append(item)
 
-    return valid_rows, issues
+    return valid_rows, issues, failed_devices
 
 
 def write_merged_output(output_folder_path: Path, rows: List[Dict[str, str]]) -> Path:
@@ -323,6 +348,7 @@ def process_folder(
     input_folder_path: Path,
     output_folder_path: Path,
     enable_sorting: bool = False,
+    enable_failed_device_sheet: bool = False,
     sorting_configs: Optional[List[Dict[str, object]]] = None,
 ) -> Tuple[Path, List[str], int, int, Optional[int]]:
     files = sorted(
@@ -337,12 +363,14 @@ def process_folder(
         raise ValueError("資料夾內沒有 xlsx/csv 檔案")
 
     merged_rows: List[Dict[str, str]] = []
+    failed_device_records: List[Dict[str, str]] = []
     messages: List[str] = []
 
     for file_path in files:
-        transformed, issues = validate_and_transform_file(file_path)
+        transformed, issues, failed_devices = validate_and_transform_file(file_path)
         messages.extend(issues)
         merged_rows.extend(transformed)
+        failed_device_records.extend(failed_devices)
 
     if not merged_rows:
         raise ValueError("沒有任何符合規則的資料可合併")
@@ -367,6 +395,8 @@ def process_folder(
     output_path = write_merged_output(output_folder_path, merged_rows)
     if output_path.suffix.lower() == ".csv":
         messages.append("提醒: 未安裝 openpyxl，輸出改為 merged_output.csv")
+        if enable_failed_device_sheet:
+            messages.append("提醒: 選擇Fail device 需要 openpyxl 才能輸出 failed device 工作表")
         return (
             output_path,
             messages,
@@ -376,6 +406,12 @@ def process_folder(
         )
 
     sorting_qualified_sn_count: Optional[int] = None
+
+    if enable_failed_device_sheet:
+        append_failed_device_sheet(output_path, failed_device_records)
+        failed_device_count = len({item["TESTSN"] for item in failed_device_records})
+        messages.append(f"failed device 工作表完成：共 {failed_device_count} 顆 TESTSN")
+
     if enable_sorting:
         active_configs = sorting_configs or []
         if not active_configs:
@@ -558,6 +594,36 @@ def append_sorting_sheet(
     wb.save(output_path)
 
 
+def append_failed_device_sheet(
+    output_path: Path,
+    failed_device_records: List[Dict[str, str]],
+) -> None:
+    from openpyxl import load_workbook
+
+    wb = load_workbook(output_path)
+    if "failed device" in wb.sheetnames:
+        del wb["failed device"]
+
+    ws = wb.create_sheet("failed device")
+    headers = ["TESTSN", "SourceFile", "Reason"]
+    ws.append(headers)
+
+    unique_records = []
+    seen = set()
+    for item in failed_device_records:
+        row_key = (item.get("TESTSN", ""), item.get("SourceFile", ""), item.get("Reason", ""))
+        if row_key in seen:
+            continue
+        seen.add(row_key)
+        unique_records.append(item)
+
+    unique_records.sort(key=lambda item: (str(item.get("TESTSN", "")), str(item.get("SourceFile", ""))))
+    for item in unique_records:
+        ws.append([item.get("TESTSN", ""), item.get("SourceFile", ""), item.get("Reason", "")])
+
+    wb.save(output_path)
+
+
 def append_sum_sheet(
     output_path: Path,
     merged_rows: List[Dict[str, str]],
@@ -653,6 +719,9 @@ class App(tk.Tk):
         self.enable_sorting_var = tk.BooleanVar(
             value=bool(self.ui_config.get("enable_sorting", False))
         )
+        self.enable_failed_device_sheet_var = tk.BooleanVar(
+            value=bool(self.ui_config.get("enable_failed_device_sheet", False))
+        )
         self.sorting_rows_vars: List[Dict[str, tk.StringVar]] = []
         self._build_ui()
         self._apply_saved_sorting_rows()
@@ -682,6 +751,12 @@ class App(tk.Tk):
             text="啟用 sorting（可設定多個條件優先順序）",
             variable=self.enable_sorting_var,
         ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 4))
+
+        ttk.Checkbutton(
+            frame,
+            text="選擇Fail device",
+            variable=self.enable_failed_device_sheet_var,
+        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(0, 4))
 
         ttk.Label(frame, text="Sorting 條件（Min/Max + 優先順序 1~20）：").grid(
             row=5, column=0, columnspan=3, sticky="w", pady=(0, 4)
@@ -771,6 +846,7 @@ class App(tk.Tk):
             "input_folder": self.folder_var.get().strip(),
             "output_folder": self.output_folder_var.get().strip(),
             "enable_sorting": self.enable_sorting_var.get(),
+            "enable_failed_device_sheet": self.enable_failed_device_sheet_var.get(),
             "sorting_rows": sorting_rows,
         }
 
@@ -825,6 +901,7 @@ class App(tk.Tk):
         self._save_ui_config()
 
         enable_sorting = self.enable_sorting_var.get()
+        enable_failed_device_sheet = self.enable_failed_device_sheet_var.get()
         sorting_configs: List[Dict[str, object]] = []
 
         if enable_sorting:
@@ -865,6 +942,7 @@ class App(tk.Tk):
                 folder_path,
                 output_folder_path,
                 enable_sorting=enable_sorting,
+                enable_failed_device_sheet=enable_failed_device_sheet,
                 sorting_configs=sorting_configs,
             )
             self.log(f"完成，總筆數：{total_rows}")
@@ -882,6 +960,7 @@ class App(tk.Tk):
                     sorting_configs=sorting_configs,
                     qualified_24_sn_count=qualified_24_sn_count,
                     sorting_qualified_sn_count=sorting_qualified_sn_count,
+                    enable_failed_device_sheet=enable_failed_device_sheet,
                 ),
             )
         except Exception as exc:
@@ -895,11 +974,17 @@ class App(tk.Tk):
         sorting_configs: List[Dict[str, object]],
         qualified_24_sn_count: int,
         sorting_qualified_sn_count: Optional[int],
+        enable_failed_device_sheet: bool,
     ) -> str:
         lines = [
             f"合併完成：{output_path}",
             f"符合 24 筆的 TESTSN 數量：{qualified_24_sn_count} 顆",
         ]
+        if enable_failed_device_sheet:
+            lines.append("已啟用：選擇Fail device（若有 FAIL 將輸出 failed device 工作表）")
+        else:
+            lines.append("已啟用：選擇Fail device = 否")
+
         if enable_sorting:
             lines.append(
                 f"最後條件 sorting 後符合的 TESTSN 數量：{sorting_qualified_sn_count or 0} 顆"
