@@ -2,6 +2,7 @@ import csv
 import json
 import math
 import re
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -774,6 +775,7 @@ class App(tk.Tk):
             value=bool(self.ui_config.get("enable_failed_device_sheet", False))
         )
         self.sorting_rows_vars: List[Dict[str, tk.StringVar]] = []
+        self.netlist_file_var = tk.StringVar()
         self._build_ui()
         self._apply_saved_sorting_rows()
 
@@ -797,24 +799,38 @@ class App(tk.Tk):
             row=3, column=2, sticky="ew"
         )
 
+        ttk.Separator(frame, orient="horizontal").grid(
+            row=4, column=0, columnspan=3, sticky="ew", pady=(4, 8)
+        )
+        ttk.Label(frame, text="Altium Netlist 檢查：").grid(row=5, column=0, sticky="w")
+        ttk.Entry(frame, textvariable=self.netlist_file_var, width=80).grid(
+            row=6, column=0, columnspan=2, sticky="ew", padx=(0, 8), pady=(4, 8)
+        )
+        ttk.Button(frame, text="選擇 Netlist 檔案", command=self.choose_netlist_file).grid(
+            row=6, column=2, sticky="ew"
+        )
+        ttk.Button(frame, text="執行 Netlist Check", command=self.run_netlist_check).grid(
+            row=7, column=0, columnspan=3, sticky="ew", pady=(0, 8)
+        )
+
         ttk.Checkbutton(
             frame,
             text="啟用 sorting（可設定多個條件優先順序）",
             variable=self.enable_sorting_var,
-        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        ).grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 4))
 
         ttk.Checkbutton(
             frame,
             text="選擇Fail device",
             variable=self.enable_failed_device_sheet_var,
-        ).grid(row=4, column=1, columnspan=2, sticky="w", pady=(0, 4))
+        ).grid(row=8, column=1, columnspan=2, sticky="w", pady=(0, 4))
 
         ttk.Label(frame, text="Sorting 條件（Min/Max + 優先順序 1~20）：").grid(
-            row=5, column=0, columnspan=3, sticky="w", pady=(0, 4)
+            row=9, column=0, columnspan=3, sticky="w", pady=(0, 4)
         )
 
         sorting_frame = ttk.Frame(frame)
-        sorting_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        sorting_frame.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(0, 6))
         sorting_frame.columnconfigure(0, weight=2)
         sorting_frame.columnconfigure(1, weight=1)
         sorting_frame.columnconfigure(2, weight=1)
@@ -854,22 +870,22 @@ class App(tk.Tk):
             ).grid(row=idx, column=3, sticky="w")
 
         ttk.Button(frame, text="執行", command=self.run_process).grid(
-            row=7, column=0, columnspan=3, sticky="ew", pady=(0, 10)
+            row=11, column=0, columnspan=3, sticky="ew", pady=(0, 10)
         )
 
-        ttk.Label(frame, text="執行訊息：").grid(row=8, column=0, sticky="w")
+        ttk.Label(frame, text="執行訊息：").grid(row=12, column=0, sticky="w")
 
         self.log_text = tk.Text(frame, wrap="word", height=20)
-        self.log_text.grid(row=9, column=0, columnspan=3, sticky="nsew")
+        self.log_text.grid(row=13, column=0, columnspan=3, sticky="nsew")
 
         scrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.log_text.yview)
-        scrollbar.grid(row=9, column=3, sticky="ns")
+        scrollbar.grid(row=13, column=3, sticky="ns")
         self.log_text.configure(yscrollcommand=scrollbar.set)
 
         frame.columnconfigure(0, weight=1)
         frame.columnconfigure(1, weight=1)
         frame.columnconfigure(2, weight=1)
-        frame.rowconfigure(9, weight=1)
+        frame.rowconfigure(13, weight=1)
 
     def choose_folder(self):
         folder = filedialog.askdirectory(initialdir=self.folder_var.get() or ".")
@@ -880,6 +896,65 @@ class App(tk.Tk):
         folder = filedialog.askdirectory(initialdir=self.output_folder_var.get() or ".")
         if folder:
             self.output_folder_var.set(folder)
+
+    def choose_netlist_file(self):
+        file_path = filedialog.askopenfilename(
+            title="選擇 Altium Netlist 檔案",
+            filetypes=[("Netlist Files", "*.net *.txt"), ("All Files", "*.*")],
+        )
+        if file_path:
+            self.netlist_file_var.set(file_path)
+
+    def run_netlist_check(self):
+        self.log_text.delete("1.0", "end")
+        file_path = Path(self.netlist_file_var.get().strip())
+        if not file_path:
+            messagebox.showerror("錯誤", "請先選擇 Netlist 檔案")
+            return
+        if not file_path.exists() or not file_path.is_file():
+            messagebox.showerror("錯誤", "Netlist 檔案不存在")
+            return
+
+        try:
+            report = self._check_altium_netlist(file_path)
+            for line in report:
+                self.log(line)
+            messagebox.showinfo("完成", "Netlist 檢查完成，請查看執行訊息。")
+        except Exception as exc:
+            self.log(f"Netlist 檢查失敗：{exc}")
+            messagebox.showerror("錯誤", f"Netlist 檢查失敗: {exc}")
+
+    def _check_altium_netlist(self, file_path: Path) -> List[str]:
+        content = file_path.read_text(encoding="utf-8", errors="ignore")
+        net_names = re.findall(r"\bNET\s*=\s*([^\r\n;]+)", content, flags=re.IGNORECASE)
+
+        if not net_names:
+            fallback = re.findall(r"\(([^\s()]+)\s+[^()]+\)", content)
+            net_names = [name.strip() for name in fallback if name.strip()]
+
+        cleaned = [name.strip() for name in net_names if name.strip()]
+        if not cleaned:
+            return [
+                f"檔案：{file_path.name}",
+                "找不到可解析的 Net 名稱，請確認格式是否為 Altium 匯出的 netlist。",
+            ]
+
+        counts = Counter(cleaned)
+        duplicated = sorted([name for name, count in counts.items() if count > 1])
+        no_conn = [name for name in cleaned if name.upper().startswith("N$")]
+
+        report = [
+            f"檔案：{file_path.name}",
+            f"Net 總數：{len(cleaned)}",
+            f"唯一 Net 數：{len(counts)}",
+            f"重複 Net 數：{len(duplicated)}",
+            f"疑似 No-Name Net（N$*）數：{len(no_conn)}",
+        ]
+        if duplicated:
+            report.append("重複 Net 清單：" + ", ".join(duplicated[:30]))
+            if len(duplicated) > 30:
+                report.append(f"...其餘 {len(duplicated) - 30} 筆未顯示")
+        return report
 
     def _collect_ui_config(self) -> Dict[str, object]:
         sorting_rows: List[Dict[str, str]] = []
